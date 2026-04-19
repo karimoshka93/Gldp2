@@ -80,37 +80,64 @@ async function startServer() {
 
       // 2. If not in Supabase, try migrating from Firestore
       if (!user && firestore) {
-        console.log(`User ${telegramId} not found in Supabase. Checking Firestore...`);
+        console.log(`User ${telegramId} (${username}) not found in Supabase. Checking Firestore...`);
         
-        // Try to find user in Firestore "users" collection
-        // Assuming the document ID is the telegramId or it has a telegramId field
         let firestoreUser: any = null;
+        let firestoreDocId: string | null = null;
         
-        // First try doc ID
-        const docRef = firestore.collection('users').doc(telegramId.toString());
-        const docSnap = await docRef.get();
+        // --- MULTI-SEARCH STRATEGY ---
         
-        if (docSnap.exists) {
-          firestoreUser = docSnap.data();
-        } else {
-          // Then try querying by field
-          const querySnap = await firestore.collection('users').where('telegram_id', '==', telegramId.toString()).limit(1).get();
-          if (!querySnap.empty) {
-            firestoreUser = querySnap.docs[0].data();
+        // Search 1: By Telegram ID (numeric doc ID)
+        const docById = await firestore.collection('users').doc(telegramId.toString()).get();
+        if (docById.exists) {
+          firestoreUser = docById.data();
+          firestoreDocId = docById.id;
+        }
+
+        // Search 2: By Telegram ID field
+        if (!firestoreUser) {
+          const qById = await firestore.collection('users').where('telegram_id', '==', telegramId.toString()).limit(1).get();
+          if (!qById.empty) {
+            firestoreUser = qById.docs[0].data();
+            firestoreDocId = qById.docs[0].id;
+          }
+        }
+
+        // Search 3: By Username field (Master's request)
+        if (!firestoreUser && username) {
+          const qByUsername = await firestore.collection('users').where('username', '==', username).limit(1).get();
+          if (!qByUsername.empty) {
+            firestoreUser = qByUsername.docs[0].data();
+            firestoreDocId = qByUsername.docs[0].id;
+          }
+        }
+
+        // Search 4: By ownerId field (Master's image verification)
+        if (!firestoreUser) {
+          // We can't query the entire DB for an unknown ownerId efficiently, 
+          // but we can check if there's a document with a field that matches the ID
+          const qByOwnerId = await firestore.collection('users').where('ownerId', '==', telegramId.toString()).limit(1).get();
+          if (!qByOwnerId.empty) {
+            firestoreUser = qByOwnerId.docs[0].data();
+            firestoreDocId = qByOwnerId.docs[0].id;
           }
         }
 
         if (firestoreUser) {
-          console.log(`Found user ${telegramId} in Firestore. Migrating...`);
+          console.log(`Found V1 data for ${telegramId} in Firestore (Doc: ${firestoreDocId}). Migrating...`);
           
-          // Map Firestore fields to Supabase schema
+          // Map Firebase Balance & Rank correctly
+          // We prioritize 'points' or 'airdropRank' if they exist
+          const v1Balance = firestoreUser.balance || firestoreUser.points || 0;
+          const v1Rank = firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.rank || 0;
+
           const migratedData = {
             id: telegramId.toString(),
             username: firestoreUser.username || username,
             first_name: firestoreUser.first_name || first_name,
-            balance: firestoreUser.balance || 0,
+            balance: v1Balance,
             active_multiplier: firestoreUser.active_multiplier || firestoreUser.multiplier || 0.1,
-            airdrop_rank: firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.rank || 0,
+            airdrop_rank: v1Rank,
             energy: firestoreUser.energy || 1000,
             game_tickets: firestoreUser.game_tickets || 5,
             extra_combat_matches: firestoreUser.extra_combat_matches || 0,
@@ -118,18 +145,19 @@ async function startServer() {
             last_claim_at: firestoreUser.last_claim_at || new Date().toISOString(),
             code_task_states: firestoreUser.code_task_states || {},
             daily_quest_states: firestoreUser.daily_quest_states || {},
-            v1_synced: true
+            v1_synced: true,
+            updated_at: new Date().toISOString()
           };
 
           const { data: newUser, error: createError } = await supabase
             .from('profiles')
-            .insert([migratedData])
+            .upsert([migratedData]) // Use upsert to avoid duplicate errors
             .select()
             .single();
 
           if (createError) throw createError;
           user = newUser;
-          console.log(`Migration successful for user ${telegramId}`);
+          console.log(`V1 Migration success for ${username}`);
         }
       }
 
@@ -162,8 +190,9 @@ async function startServer() {
         user = newUser;
       } else {
         // Energy Refill Logic (1 per 1 second, max 1000)
+        // We use updated_at since it's confirmed in the schema
         const calculateEnergy = (currentEnergy: number, lastUpdate: string) => {
-          const last = new Date(lastUpdate);
+          const last = new Date(lastUpdate || 0);
           const now = new Date();
           const diffSecs = Math.floor((now.getTime() - last.getTime()) / 1000);
           return Math.min(1000, currentEnergy + Math.max(0, diffSecs));
