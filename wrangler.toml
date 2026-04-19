@@ -1,0 +1,12 @@
+name = "gld-tap-mini-app"
+main = "server.ts"
+compatibility_date = "2024-04-01"
+
+[vars]
+# Add these in Cloudflare Dashboard
+# SUPABASE_URL = "your-url"
+# SUPABASE_ANON_KEY = "your-key"
+# TELEGRAM_BOT_TOKEN = "your-bot-token"
+
+# If using Hono or standard fetch for Cloudflare Workers, 
+# you would build the server slightly differently, but the logic remains the same.

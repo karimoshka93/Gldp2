@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GLD Tap - Telegram Mini App</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+      // Mock Telegram WebApp for development
+      if (!window.Telegram || !window.Telegram.WebApp || !window.Telegram.WebApp.initData) {
+        window.Telegram = {
+          WebApp: {
+            initData: "user=%7B%22id%22%3A12345%2C%22first_name%22%3A%22Mock%22%2C%22last_name%22%3A%22Builder%22%2C%22username%22%3A%22ais_builder%22%2C%22language_code%22%3A%22en%22%7D&chat_instance=123&chat_type=sender&auth_date=1623456789&hash=abc",
+            initDataUnsafe: {
+              user: {
+                id: 12345,
+                first_name: "Mock",
+                last_name: "Builder",
+                username: "ais_builder",
+                language_code: "en"
+              }
+            },
+            version: "7.0",
+            platform: "unknown",
+            colorScheme: "dark",
+            themeParams: {},
+            isExpanded: true,
+            viewportHeight: 600,
+            viewportStableHeight: 600,
+            headerColor: "#0f172a",
+            backgroundColor: "#0f172a",
+            ready: function() { console.log("Mock WebApp ready"); },
+            expand: function() { console.log("Mock WebApp expand"); },
+            close: function() { console.log("Mock WebApp close"); },
+            MainButton: {
+              text: "MAIN BUTTON",
+              color: "#facc15",
+              textColor: "#000000",
+              isVisible: false,
+              isActive: true,
+              show: function() { this.isVisible = true; },
+              hide: function() { this.isVisible = false; },
+              onClick: function(cb) { this.callback = cb; }
+            }
+          }
+        };
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
