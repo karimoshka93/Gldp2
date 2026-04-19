@@ -65,6 +65,12 @@ async function startServer() {
         .single();
 
       if (error && error.code !== 'PGRST116') {
+        if (error.message.includes("Could not find the table 'public.profiles'")) {
+          return res.status(500).json({ 
+            error: 'MISSING_TABLE', 
+            message: 'The "profiles" table was not found in your Supabase database. Please open SCHEMA_SETUP.MD in the file explorer and follow the instructions to create the table.' 
+          });
+        }
         throw error;
       }
 

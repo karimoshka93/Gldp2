@@ -413,6 +413,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
   useEffect(() => {
     // Initial Sync
@@ -442,12 +443,19 @@ export default function App() {
         const data = await res.json();
         
         if (data.error) {
-          throw new Error(data.error);
+          if (data.error === 'MISSING_TABLE') {
+            setErrorDetails(data.message);
+          } else {
+            setErrorDetails(data.message || data.error);
+          }
+          throw new Error(data.message || data.error);
         }
         
         setUser(data);
       } catch (err: any) {
-        console.error('Sync Error:', err.message || err);
+        const errorMsg = err.message || JSON.stringify(err);
+        console.error('Sync Error:', errorMsg);
+        if (!errorDetails) setErrorDetails(errorMsg);
       } finally {
         setLoading(false);
       }
@@ -473,13 +481,13 @@ export default function App() {
           <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mx-auto border border-red-500/20">
              <Target className="w-10 h-10 text-red-500" />
           </div>
-          <h2 className="text-2xl font-black">Connection Error</h2>
-          <p className="text-sm text-[#94a3b8]">We couldn't synchronize your profile. Please ensure your Supabase secrets are configured correctly in the AI Studio Settings.</p>
+          <h2 className="text-2xl font-black">Sync Required</h2>
+          <p className="text-sm text-[#94a3b8]">{errorDetails || "We couldn't synchronize your profile. Please check your Supabase configuration."}</p>
           <button 
             onClick={() => window.location.reload()}
             className="w-full py-4 bg-white text-black font-black rounded-xl active:scale-95 transition-all"
           >
-            RETRY CONNECTION
+            RETRY SYNC
           </button>
         </div>
       </div>
