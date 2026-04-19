@@ -78,51 +78,23 @@ async function startServer() {
         throw error;
       }
 
-      // 2. If not in Supabase, try migrating from Firestore (Fresh Start)
-      if (!user && firestore) {
-        console.log(`NEW USER: ${telegramId} (${username}). Checking V1 Activity Points...`);
+      // 2. If not in Supabase, create a fresh profile (Fresh Start - No mandatory sync)
+      if (!user) {
+        console.log(`NEW USER: ${telegramId} (${username}). Creating fresh profile...`);
         
-        let firestoreUser: any = null;
-        
-        // --- MULTI-SEARCH FOR V1 IMPORT ---
-        // Search 1: By Telegram ID (numeric doc ID)
-        const docById = await firestore.collection('users').doc(telegramId.toString()).get();
-        if (docById.exists) firestoreUser = docById.data();
-
-        // Search 2: ID field string
-        if (!firestoreUser) {
-          const qByTid = await firestore.collection('users').where('telegram_id', '==', telegramId.toString()).limit(1).get();
-          if (!qByTid.empty) firestoreUser = qByTid.docs[0].data();
-        }
-
-        // Search 3: Username
-        if (!firestoreUser && username) {
-          const qByUsername = await firestore.collection('users').where('username', '==', username).limit(1).get();
-          if (!qByUsername.empty) firestoreUser = qByUsername.docs[0].data();
-        }
-
-        // Search 4: ownerId
-        if (!firestoreUser) {
-          const qByOwnerId = await firestore.collection('users').where('ownerId', '==', telegramId.toString()).limit(1).get();
-          if (!qByOwnerId.empty) firestoreUser = qByOwnerId.docs[0].data();
-        }
-
-        // The Activity Points Foundation (Master's request: IMPORT ONLY THIS)
-        const v1Points = firestoreUser ? (firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.points || firestoreUser.rank || 0) : 0;
-
         const { data: newUser, error: createError } = await supabase
           .from('profiles')
           .insert([{
             id: telegramId.toString(),
-            username: username || (firestoreUser?.username),
-            first_name: first_name || (firestoreUser?.first_name),
-            photo_url: req.body.photo_url || (firestoreUser?.photo_url) || null,
-            airdropRank: v1Points,
+            username,
+            first_name,
+            photo_url: req.body.photo_url || null,
+            airdropRank: 0,
             balance: 0,
             multiplier: 0.1,
             energy: 1000,
             referred_by: req.body.referred_by || null,
-            v1_synced: true,
+            v1_synced: false,
             updated_at: new Date().toISOString()
           }])
           .select()
@@ -130,7 +102,6 @@ async function startServer() {
 
         if (createError) throw createError;
         user = newUser;
-        console.log(`SUCCESS: Created profile & imported ${v1Points} points for ${username}`);
       }
 
       // 3. Handle Energy & Persistence for Existing Users
@@ -156,23 +127,6 @@ async function startServer() {
           .single();
           
         if (!updateError) user = updatedUser;
-      } else {
-        // Fallback for failed migration or no Firestore
-        const { data: freshUser, error: createError } = await supabase
-          .from('profiles')
-          .insert([{
-            id: telegramId.toString(),
-            username,
-            first_name,
-            airdropRank: 0,
-            balance: 0,
-            multiplier: 0.1,
-            energy: 1000,
-            v1_synced: false
-          }])
-          .select()
-          .single();
-        if (!createError) user = freshUser;
       }
 
       res.json(user);
@@ -473,7 +427,7 @@ async function startServer() {
 
       const { data: currentUser, error: checkError } = await supabase
         .from('profiles')
-        .select('airdropRank, v1_synced')
+        .select('username, airdropRank, v1_synced')
         .eq('id', telegramId.toString())
         .single();
       
@@ -484,15 +438,29 @@ async function startServer() {
       let firestoreUser: any = null;
 
       for (const col of collections) {
+        // Try by ID directly
         const docSnap = await firestore.collection(col).doc(telegramId.toString()).get();
         if (docSnap.exists) { firestoreUser = docSnap.data(); break; }
+        
+        // Try by telegram_id field
         const querySnapNum = await firestore.collection(col).where('id', '==', parseInt(telegramId)).limit(1).get();
         if (!querySnapNum.empty) { firestoreUser = querySnapNum.docs[0].data(); break; }
+
         const queryByTid = await firestore.collection(col).where('telegram_id', '==', telegramId.toString()).limit(1).get();
         if (!queryByTid.empty) { firestoreUser = queryByTid.docs[0].data(); break; }
+
+        // Try by username
+        if (currentUser.username) {
+          const qByUsername = await firestore.collection(col).where('username', '==', currentUser.username).limit(1).get();
+          if (!qByUsername.empty) { firestoreUser = qByUsername.docs[0].data(); break; }
+        }
+
+        // Try by ownerId
+        const qByOwnerId = await firestore.collection(col).where('ownerId', '==', telegramId.toString()).limit(1).get();
+        if (!qByOwnerId.empty) { firestoreUser = qByOwnerId.docs[0].data(); break; }
       }
 
-      if (!firestoreUser) return res.status(404).json({ error: 'No data found.' });
+      if (!firestoreUser) return res.status(404).json({ error: 'No data found in V1 database.' });
 
       const v1Points = firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.points || firestoreUser.rank || 0;
       const totalPoints = (currentUser.airdropRank || 0) + v1Points;
@@ -501,6 +469,7 @@ async function startServer() {
         .from('profiles')
         .update({ airdropRank: totalPoints, v1_synced: true })
         .eq('id', telegramId.toString())
+        .select()
         .single();
 
       if (updateError) throw updateError;

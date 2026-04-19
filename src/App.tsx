@@ -723,7 +723,7 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
             {user.photo_url ? (
               <img src={user.photo_url} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
             ) : (
-              <div className="w-full h-full flex items-center justify-center text-4xl font-black text-white">{user.username[0].toUpperCase()}</div>
+              <div className="w-full h-full flex items-center justify-center text-4xl font-black text-white">{user.username?.[0]?.toUpperCase() || 'G'}</div>
             )}
           </div>
         </div>
@@ -731,7 +731,7 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
           <h2 className="text-3xl font-black text-white tracking-tighter">{user.first_name || user.username}</h2>
           <div className="flex items-center justify-center gap-2 mt-1">
             <span className="text-blue-400 font-mono text-xs font-bold px-2 py-0.5 bg-blue-500/10 rounded-full border border-blue-500/20">@{user.username}</span>
-            <span className="text-[#facc15] font-mono text-xs font-bold px-2 py-0.5 bg-[#facc15]/10 rounded-full border border-[#facc15]/20 font-black tracking-tighter uppercase">R# {user.airdrop_rank}</span>
+            <span className="text-[#facc15] font-mono text-xs font-bold px-2 py-0.5 bg-[#facc15]/10 rounded-full border border-[#facc15]/20 font-black tracking-tighter uppercase">R# {user.airdropRank}</span>
           </div>
         </div>
       </div>
@@ -866,19 +866,19 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
       {/* Sorting Tabs */}
       <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
         <button 
-          onClick={() => setSortBy('airdrop_rank')}
+          onClick={() => setSortBy('airdropRank')}
           className={cn(
             "flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-            sortBy === 'airdrop_rank' ? "bg-white text-black shadow-lg" : "text-neutral-500"
+            sortBy === 'airdropRank' ? "bg-white text-black shadow-lg" : "text-neutral-500"
           )}
         >
           Activity
         </button>
         <button 
-          onClick={() => setSortBy('active_multiplier')}
+          onClick={() => setSortBy('multiplier')}
           className={cn(
             "flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-            sortBy === 'active_multiplier' ? "bg-white text-black shadow-lg" : "text-neutral-500"
+            sortBy === 'multiplier' ? "bg-white text-black shadow-lg" : "text-neutral-500"
           )}
         >
           Earnings
@@ -988,7 +988,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
                    <p className="font-black text-xs">@{user.username} (You)</p>
                  </div>
                  <span className="font-mono font-black text-xs">
-                   {sortBy === 'active_multiplier' ? `+${Math.floor(user.active_multiplier * 3600)}/h` : user.airdrop_rank.toLocaleString()}
+                   {sortBy === 'multiplier' ? `+${Math.floor(user.multiplier * 3600)}/h` : user.airdropRank.toLocaleString()}
                  </span>
                </div>
             </div>
