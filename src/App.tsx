@@ -700,11 +700,13 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
         body: JSON.stringify({ telegramId: user.id })
       });
       const data = await res.json();
-      if (data.id) {
+      if (data && data.id) {
         setUser(data);
         alert('Old activity points successfully synchronized!');
+      } else if (data && data.error) {
+        alert(data.message || data.error);
       } else {
-        alert(data.error || 'No old data found for this account.');
+        alert('No old data found for this account.');
       }
     } catch (err) {
       console.error(err);
@@ -1071,11 +1073,14 @@ export default function App() {
         
         const data = await res.json();
         
-        if (data.error) throw new Error(data.message || data.error);
-        
-        if (data.user) {
+        if (!data) throw new Error("Synchronization returned empty data. Please refresh.");
+        if (data.id) {
+          setUser(data);
+        } else if (data.user) {
           setUser(data.user);
           setReferralCount(data.referralCount || 0);
+        } else if (data.error) {
+          throw new Error(data.message || data.error);
         } else {
           setUser(data);
         }

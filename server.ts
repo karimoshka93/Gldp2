@@ -101,6 +101,7 @@ async function startServer() {
           .single();
 
         if (createError) throw createError;
+        if (!newUser) throw new Error('Failed to create user profile. Check Row Level Security (RLS) policies.');
         user = newUser;
       }
 
@@ -126,7 +127,14 @@ async function startServer() {
           .select()
           .single();
           
-        if (!updateError) user = updatedUser;
+        // If update was successful but select() returned null (due to RLS), keep original user
+        if (!updateError) {
+          user = updatedUser || { ...user, energy: newEnergy };
+        }
+      }
+
+      if (!user) {
+        return res.status(500).json({ error: 'SYNC_FAILED', message: 'No user profile data available after synchronization.' });
       }
 
       res.json(user);
@@ -310,7 +318,8 @@ async function startServer() {
         .single();
       
       if (error) throw error;
-      res.json(data);
+      const finalUser = data || { id: telegramId.toString(), balance, energy };
+      res.json(finalUser);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -344,7 +353,8 @@ async function startServer() {
         .from('profiles')
         .update({
           balance: user.balance + earnings,
-          last_claim_at: now.toISOString()
+          last_claim_at: now.toISOString(),
+          updated_at: now.toISOString()
         })
         .eq('id', telegramId.toString())
         .select()
@@ -352,7 +362,8 @@ async function startServer() {
 
       if (updateError) throw updateError;
       
-      res.json({ user: updatedUser, earned: earnings });
+      const finalUser = updatedUser || { ...user, balance: user.balance + earnings, last_claim_at: now.toISOString() };
+      res.json({ user: finalUser, earned: earnings });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -385,7 +396,8 @@ async function startServer() {
         .from('profiles')
         .update({
           balance: newBalance,
-          multiplier: user.multiplier + boost
+          multiplier: user.multiplier + boost,
+          updated_at: new Date().toISOString()
         })
         .eq('id', telegramId.toString())
         .select()
@@ -393,7 +405,8 @@ async function startServer() {
 
       if (updateError) throw updateError;
       
-      res.json(updatedUser);
+      const finalUser = updatedUser || { ...user, balance: newBalance, multiplier: user.multiplier + boost };
+      res.json(finalUser);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
