@@ -14,7 +14,20 @@ import {
   TrendingUp,
   Clock,
   ExternalLink,
-  Plus
+  Plus,
+  Coins,
+  Cpu,
+  Globe,
+  Database,
+  Terminal,
+  Shield,
+  Workflow,
+  Layers,
+  Server,
+  Code,
+  HardDrive,
+  Send,
+  Crown
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { 
@@ -67,15 +80,18 @@ const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: 
 
 const Header = ({ user, setActiveTab }: { user: UserProfile | null, setActiveTab: (t: string) => void }) => (
   <header 
-    onClick={() => setActiveTab('profile')}
+    onClick={(e) => {
+      e.preventDefault();
+      setActiveTab('profile');
+    }}
     className="fixed top-0 left-0 right-0 px-6 pt-10 pb-4 bg-[#0f172a]/80 backdrop-blur-md z-40 flex items-center justify-between border-b border-[#334155] cursor-pointer active:bg-white/5 transition-colors"
   >
     <div className="flex items-center gap-3">
-      <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center font-bold text-white shadow-lg border-2 border-white/20 overflow-hidden">
+      <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-yellow-500 to-amber-600 flex items-center justify-center font-bold text-white shadow-[0_0_15px_rgba(234,179,8,0.3)] border-2 border-yellow-400 overflow-hidden">
         {user?.photo_url ? (
           <img src={user.photo_url} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
         ) : (
-          user?.username?.[0]?.toUpperCase() || 'G'
+          <div className="text-sm font-black">{user?.username?.[0]?.toUpperCase() || 'G'}</div>
         )}
       </div>
       <div>
@@ -94,17 +110,34 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
   const [tapValue, setTapValue] = useState(user.balance);
   const [floatingTexts, setFloatingTexts] = useState<{ id: number, x: number, y: number }[]>([]);
   const tapCooldownRef = useRef<NodeJS.Timeout | null>(null);
+  const [accumulated, setAccumulated] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(14400); // 4 hours in seconds
 
-  // Sync balance to server after user stops tapping for 2 seconds
-  const syncBalance = async (newBalance: number) => {
+  // Live calculation of accumulated passive income
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      const lastClaim = new Date(user.last_claim_at);
+      const diffSecs = (now.getTime() - lastClaim.getTime()) / 1000;
+      
+      const earned = Math.floor(diffSecs * user.active_multiplier);
+      setAccumulated(earned);
+      
+      const remaining = Math.max(0, 14400 - (diffSecs % 14400));
+      setTimeLeft(remaining);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [user.last_claim_at, user.active_multiplier]);
+
+  const syncBalance = async (newBalance: number, newEnergy: number) => {
     try {
       await fetch('/api/user/sync-balance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telegramId: user.id, balance: newBalance })
+        body: JSON.stringify({ telegramId: user.id, balance: newBalance, energy: newEnergy })
       });
     } catch (err) {
-      console.error("Sync error:", err);
+      console.error("Critical Sync Error:", err);
     }
   };
 
@@ -115,24 +148,26 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
     if (user.energy <= 0) return;
 
     const newBalance = tapValue + 1;
+    const newEnergy = user.energy - 1;
     setTapValue(newBalance);
     setFloatingTexts(prev => [...prev, { id: Date.now(), x, y }]);
     
-    setUser({ ...user, balance: newBalance, energy: user.energy - 1 });
+    setUser({ ...user, balance: newBalance, energy: newEnergy });
 
-    // Debounced sync
     if (tapCooldownRef.current) clearTimeout(tapCooldownRef.current);
     tapCooldownRef.current = setTimeout(() => {
-      syncBalance(newBalance);
-    }, 2000);
+      syncBalance(newBalance, newEnergy);
+    }, 1000);
 
     setTimeout(() => {
       setFloatingTexts(prev => prev.filter(t => t.id !== Date.now()));
-    }, 1000);
+    }, 800);
   };
 
   const handleClaim = async () => {
     try {
+      if (accumulated <= 0) return alert("Nothing to claim yet!");
+      
       const res = await fetch('/api/user/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -142,23 +177,38 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
       if (data.user) {
         setUser(data.user);
         setTapValue(data.user.balance);
-        alert(`Claimed ${data.earned} GLDp!`);
+        alert(`Claimed ${data.earned.toLocaleString()} GLDp!`);
       }
     } catch (err) {
       console.error(err);
     }
   };
 
-  const now = new Date();
-  const nextClaimTime = new Date(new Date(user.last_claim_at).getTime() + 4 * 60 * 60 * 1000);
-  const isClaimReady = now >= nextClaimTime;
-  
-  // Progress for the 4-hour window
-  const timePassed = now.getTime() - new Date(user.last_claim_at).getTime();
-  const progress4h = Math.min((timePassed / (4 * 60 * 60 * 1000)) * 100, 100);
+  const formatTime = (secs: number) => {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
 
   return (
-    <div className="flex flex-col items-center gap-8 pt-6 pb-12">
+    <div className="flex flex-col items-center gap-10 pt-4 pb-24 px-6 relative overflow-hidden">
+      {/* Floating Particles/Texts */}
+      <AnimatePresence>
+        {floatingTexts.map(t => (
+          <motion.div
+            key={t.id}
+            initial={{ opacity: 1, y: t.y - 20, scale: 0.5 }}
+            animate={{ opacity: 0, y: t.y - 150, scale: 2 }}
+            exit={{ opacity: 0 }}
+            className="fixed pointer-events-none text-3xl font-black gold-gradient z-50 select-none"
+            style={{ left: t.x - 10 }}
+          >
+            +1
+          </motion.div>
+        ))}
+      </AnimatePresence>
+
       {/* Balance Display */}
       <motion.div 
         key={Math.floor(tapValue ?? 0)}
@@ -167,113 +217,105 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
         className="text-center"
       >
         <div className="flex items-center justify-center gap-3">
-          <img src="https://picsum.photos/seed/gold/100/100" className="w-12 h-12 rounded-full border-2 border-yellow-500/30" alt="GLD" referrerPolicy="no-referrer" />
-          <h1 className="text-5xl font-black gold-gradient font-sans tracking-tight">
+          <div className="w-14 h-14 bg-gradient-to-tr from-yellow-400 to-amber-600 rounded-full flex items-center justify-center shadow-[0_0_20px_rgba(234,179,8,0.5)] border-2 border-yellow-300">
+             <Coins className="w-8 h-8 text-yellow-900" />
+          </div>
+          <h1 className="text-6xl font-black gold-gradient font-sans tracking-tight">
             {Math.floor(tapValue ?? 0).toLocaleString()}
           </h1>
         </div>
-        <p className="text-[11px] text-[#94a3b8] mt-2 uppercase tracking-[0.2em] font-bold">GLD Points Balance</p>
+        <p className="text-[12px] text-yellow-500/80 mt-2 uppercase tracking-[0.3em] font-black">GLDp Balance</p>
       </motion.div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 gap-3 w-full max-w-sm px-6">
-        <div className="glass-card p-4 flex flex-col gap-1">
-          <div className="flex items-center gap-2 opacity-100">
-            <TrendingUp className="w-3 h-3 text-[#94a3b8]" />
-            <span className="text-[10px] uppercase font-bold text-[#94a3b8]">Passive Income</span>
-          </div>
-          <p className="text-base font-bold text-[#facc15]">+{Math.floor(user.active_multiplier * 3600)} / hr</p>
-        </div>
-        <div className="glass-card p-4 flex flex-col gap-1">
-          <div className="flex items-center gap-2 opacity-100">
-            <Plus className="w-3 h-3 text-[#94a3b8]" />
-            <span className="text-[10px] uppercase font-bold text-[#94a3b8]">Per Tap</span>
-          </div>
-          <p className="text-base font-bold text-[#facc15]">x1.0</p>
-        </div>
-      </div>
-
-      {/* Main Tap Button */}
-      <div className="relative mt-8">
-        <AnimatePresence>
-          {floatingTexts.map(text => (
-            <motion.div
-              key={text.id}
-              initial={{ y: text.y - 120, x: text.x - 20, opacity: 1, scale: 1 }}
-              animate={{ y: text.y - 200, opacity: 0, scale: 1.5 }}
-              exit={{ opacity: 0 }}
-              className="fixed pointer-events-none text-2xl font-black text-[#facc15] z-50 select-none drop-shadow-[0_0_10px_rgba(250,204,21,0.5)]"
-            >
-              +1
-            </motion.div>
-          ))}
-        </AnimatePresence>
-        
+      {/* Elegant Main Tap Sphere */}
+      <div className="relative mt-4">
         <motion.button
-          whileTap={{ scale: 0.95 }}
+          whileTap={{ scale: 0.92, rotate: 2 }}
           onClick={handleTap}
           onTouchStart={handleTap}
-          className="w-64 h-64 rounded-full relative group cursor-pointer accent-glow"
+          className="relative w-64 h-64 rounded-full group outline-none"
         >
-          {/* Outer Ring */}
-          <div className="absolute inset-0 rounded-full border-[10px] border-[#a16207] transition-colors" />
-          {/* Inner Circle */}
-          <div className="absolute inset-3 rounded-full bg-[radial-gradient(circle,_#fde047_0%,_#ca8a04_100%)] flex items-center justify-center overflow-hidden shadow-[inset_0_0_20px_rgba(255,255,255,0.5)]">
-             <span className="text-[100px] font-black text-[#713f12] select-none drop-shadow-[0_2px_0_rgba(255,255,255,0.3)]">G</span>
-             <div className="absolute inset-0 bg-white/5 opacity-0 group-active:opacity-100 transition-opacity" />
+          {/* Animated Glow Layers */}
+          <div className="absolute inset-0 rounded-full bg-yellow-500/20 blur-3xl group-active:bg-yellow-500/40 transition-all duration-500" />
+          <div className="absolute inset-[-10px] rounded-full bg-gradient-to-tr from-yellow-600/10 to-amber-500/10 animate-pulse" />
+          
+          {/* The Sphere Body */}
+          <div className="absolute inset-0 rounded-full bg-gradient-to-b from-[#fde047] via-[#eab308] to-[#854d0e] p-[4px] shadow-[0_0_50px_rgba(234,179,8,0.3)] border border-white/20">
+            <div className="w-full h-full rounded-full bg-gradient-to-tr from-black/40 via-transparent to-white/30 flex items-center justify-center overflow-hidden">
+               <div className="relative">
+                 <div className="absolute inset-0 blur-md bg-yellow-400/50 scale-125" />
+                 <Coins className="w-32 h-32 text-yellow-100 relative drop-shadow-[0_4px_10px_rgba(0,0,0,0.5)]" />
+               </div>
+            </div>
           </div>
+
+          {/* Inner Reflection Overlay */}
+          <div className="absolute inset-4 rounded-full bg-gradient-to-br from-white/10 to-transparent pointer-events-none" />
         </motion.button>
       </div>
 
-      {/* Energy Display from Design */}
-      <div className="w-full max-w-sm px-6">
-        <div className="w-full h-3 bg-[#1e293b] rounded-full overflow-hidden">
-          <motion.div 
-            initial={{ width: 0 }}
-            animate={{ width: `${(user.energy / 1000) * 100}%` }}
-            className="h-full bg-gradient-to-r from-[#facc15] to-[#fbbf24]" 
-          />
+      {/* Stats Cards */}
+      <div className="grid grid-cols-2 gap-4 w-full max-w-sm">
+        <div className="glass-card p-4 border-white/5 bg-[#1e293b]/50">
+          <div className="flex items-center gap-2 mb-2">
+            <Zap className="w-4 h-4 text-yellow-400 fill-yellow-400" />
+            <span className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">Energy Supply</span>
+          </div>
+          <div className="flex items-end justify-between">
+            <p className="text-xl font-black text-white">{user.energy}<span className="text-[10px] text-neutral-500 ml-1">/1000</span></p>
+          </div>
+          <div className="w-full h-1.5 bg-white/5 rounded-full mt-3 overflow-hidden border border-white/5">
+            <motion.div 
+              initial={{ width: 0 }}
+              animate={{ width: `${(user.energy / 1000) * 100}%` }}
+              className="h-full bg-gradient-to-r from-yellow-400 to-amber-600 shadow-[0_0_10px_rgba(234,179,8,0.4)]" 
+            />
+          </div>
         </div>
-        <div className="flex justify-between mt-2 font-bold uppercase tracking-wider">
-          <span className="text-[10px] text-[#94a3b8] flex items-center gap-1">
-            <Zap className="w-2.5 h-2.5 text-[#facc15]" />
-            Energy
-          </span>
-          <span className="text-[11px]">{user.energy} / 1000</span>
+
+        <div className="glass-card p-4 border-white/5 bg-[#1e293b]/50">
+          <div className="flex items-center gap-2 mb-2">
+            <TrendingUp className="w-4 h-4 text-green-400" />
+            <span className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">Hourly Revenue</span>
+          </div>
+          <p className="text-xl font-black text-white">
+            +{(user.active_multiplier * 3600).toLocaleString()}<span className="text-[10px] text-green-400 ml-1">/h</span>
+          </p>
+          <div className="text-[9px] text-neutral-500 mt-2 flex items-center justify-between">
+            <span className="uppercase font-bold tracking-tighter">Current ROI</span>
+            <span className="font-mono text-green-400/80">Active</span>
+          </div>
         </div>
       </div>
 
-      {/* Passive Income Claim */}
-      <div className="w-full max-w-sm px-6 mt-2">
-        <div className="mb-2 h-1.5 w-full bg-[#1e293b] rounded-full overflow-hidden">
-          <motion.div 
-            initial={{ width: 0 }}
-            animate={{ width: `${progress4h}%` }}
-            className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
-          />
-        </div>
+      {/* Claimable Profits Section */}
+      <div className="w-full max-w-sm">
         <button 
           onClick={handleClaim}
-          disabled={!isClaimReady}
-          className={cn(
-            "w-full py-4 rounded-xl flex items-center justify-between px-6 transition-all border",
-            isClaimReady 
-              ? "gold-bg text-[#713f12] font-black accent-glow scale-105" 
-              : "bg-[#1e293b] text-[#94a3b8] border-[#334155]"
-          )}
+          className="w-full glass-card p-5 border-yellow-500/20 bg-gradient-to-tr from-[#1e293b]/80 to-[#0f172a]/80 group active:scale-[0.98] transition-all"
         >
-          <div className="flex items-center gap-3">
-            <Clock className="w-5 h-5 text-[#94a3b8]" />
-            <div className="text-left">
-              <p className="text-[11px] uppercase tracking-wider font-bold">Claim 4h Passive</p>
-              <p className="text-[10px] opacity-70">
-                {isClaimReady ? 'READY TO HARVEST' : `Progress: ${Math.floor(progress4h)}%`}
-              </p>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-yellow-500/10 rounded-lg group-hover:bg-yellow-500/20 transition-colors">
+                <Clock className="w-5 h-5 text-yellow-500" />
+              </div>
+              <div className="text-left">
+                <p className="text-[10px] text-neutral-500 uppercase font-black tracking-widest leading-none mb-1">Accumulated Profit</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-2xl font-black text-white">{accumulated.toLocaleString()}</span>
+                  <span className="text-xs font-black text-yellow-500 uppercase">GLDp</span>
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-[8px] text-neutral-500 uppercase font-black mb-1">Next Cycle</p>
+              <p className="text-xs font-mono font-black text-neutral-300">{formatTime(timeLeft)}</p>
             </div>
           </div>
-          <span className="text-lg font-bold">
-             {isClaimReady ? 'CLAIM' : <ChevronRight className="w-5 h-5 opacity-30" />}
-          </span>
+          
+          <div className="h-12 w-full rounded-xl bg-yellow-500 flex items-center justify-center font-black text-black text-sm shadow-lg shadow-yellow-500/20 group-hover:bg-yellow-400 transition-colors uppercase tracking-[0.2em]">
+            CLAIM NOW
+          </div>
         </button>
       </div>
     </div>
@@ -281,17 +323,21 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
 };
 
 const DevelopersTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfile) => void }) => {
+  const devIcons = [Cpu, Globe, Database, Terminal, Shield, Workflow, Layers, Server, Code, HardDrive];
+  
   const devs: DeveloperCard[] = Array.from({ length: 30 }, (_, i) => ({
     id: `dev-${i+1}`,
     name: `Senior Dev #${i + 1}`,
-    description: `Optimizes neural tap algorithm level ${i + 1}`,
-    base_cost: (i + 1) * 1000,
+    description: `Optimizes tapping throughput v${i + 1}`,
+    base_cost: Math.floor(1000 * Math.pow(1.5, i)),
     base_boost: (i + 1) * 0.05,
-    image_url: `https://picsum.photos/seed/dev${i}/200/200`
+    image_url: '' // We use Lucide icons instead
   }));
 
   const handleUpgrade = async (dev: DeveloperCard) => {
     try {
+      if (user.balance < dev.base_cost) return alert("Insufficient GLDp!");
+      
       const res = await fetch('/api/user/upgrade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -305,7 +351,7 @@ const DevelopersTab = ({ user, setUser }: { user: UserProfile, setUser: (u: User
       const data = await res.json();
       if (data.id) {
         setUser(data);
-        alert(`Upgraded ${dev.name}! New rate: +${data.active_multiplier.toFixed(2)}/s`);
+        alert(`Successfully hired ${dev.name}!`);
       } else {
         alert(data.error || 'Upgrade failed');
       }
@@ -317,41 +363,43 @@ const DevelopersTab = ({ user, setUser }: { user: UserProfile, setUser: (u: User
   return (
     <div className="px-6 pb-24 grid grid-cols-1 gap-4">
       <div className="pt-6">
-        <h2 className="text-2xl font-black gold-gradient uppercase">The Dev Dungeon</h2>
-        <p className="text-xs text-neutral-500 uppercase font-bold tracking-widest mt-1">Hire specialists to increase passive profit</p>
+        <h2 className="text-3xl font-black gold-gradient uppercase tracking-tight">Building Roster</h2>
+        <p className="text-[10px] text-neutral-500 uppercase font-black tracking-widest mt-1">Acquire top talent for hourly earnings</p>
       </div>
       
-      {devs.map((dev) => (
-        <div key={dev.id} className="glass-card p-4 flex items-center justify-between group hov:bg-white/[0.05] transition-colors">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-xl overflow-hidden border border-white/10 shrink-0">
-               <img src={dev.image_url} className="w-full h-full object-cover" alt={dev.name} referrerPolicy="no-referrer" />
-            </div>
-            <div>
-              <p className="font-bold text-sm">{dev.name}</p>
-              <p className="text-[10px] text-neutral-500 line-clamp-1">{dev.description}</p>
-              <div className="flex items-center gap-2 mt-1">
-                <TrendingUp className="w-3 h-3 text-green-500" />
-                <span className="text-[10px] font-mono text-green-500">+{dev.base_boost}/s</span>
+      {devs.map((dev, i) => {
+        const Icon = devIcons[i % devIcons.length];
+        return (
+          <div key={dev.id} className="glass-card p-4 flex items-center justify-between group bg-[#1e293b]/50 border-white/5 active:bg-white/5">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 flex items-center justify-center border border-white/10 shrink-0 group-hover:from-indigo-500/40 transition-all">
+                 <Icon className="w-7 h-7 text-indigo-400" />
+              </div>
+              <div>
+                <p className="font-black text-sm text-white">{dev.name}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <TrendingUp className="w-3 h-3 text-green-400" />
+                  <span className="text-[11px] font-black text-green-400">+{dev.base_boost.toFixed(2)} /h</span>
+                </div>
               </div>
             </div>
+            <button 
+              onClick={() => handleUpgrade(dev)}
+              className="flex flex-col items-end gap-1"
+            >
+              <div className="px-4 py-2 rounded-xl bg-indigo-500 text-white font-black text-xs shadow-lg shadow-indigo-500/20 active:scale-90 transition-all">
+                {dev.base_cost.toLocaleString()}
+              </div>
+              <span className="text-[8px] uppercase font-bold text-neutral-500">Buy</span>
+            </button>
           </div>
-          <button 
-            onClick={() => handleUpgrade(dev)}
-            className="flex flex-col items-center gap-1 group/btn"
-          >
-            <div className="px-3 py-1.5 rounded-lg border border-yellow-500/30 group-hover/btn:bg-yellow-500 group-hover/btn:text-black transition-all">
-              <span className="text-xs font-mono font-bold">{dev.base_cost.toLocaleString()}</span>
-            </div>
-            <span className="text-[8px] uppercase font-black text-neutral-500">Upgrade</span>
-          </button>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 };
 
-const MissionsTab = ({ user }: { user: UserProfile }) => {
+const MissionsTab = ({ user, referralCount }: { user: UserProfile, referralCount: number }) => {
   const missions: Mission[] = [
     { id: '1', title: 'Join our Telegram Channel', reward: 5000, points: 10, type: 'social' },
     { id: '2', title: 'Follow us on X', reward: 5000, points: 10, type: 'social' },
@@ -645,6 +693,7 @@ const WalletTab = () => {
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [referralCount, setReferralCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
@@ -656,12 +705,11 @@ export default function App() {
         if (tg) tg.ready();
 
         const tgUser = tg?.initDataUnsafe?.user;
-        const telegramId = tgUser?.id?.toString() || '12345'; // Fallback for safety
+        const telegramId = tgUser?.id?.toString() || '12345';
         const username = tgUser?.username || 'mockuser';
         const first_name = tgUser?.first_name || 'Mock';
         const photo_url = tgUser?.photo_url || null;
         
-        // --- Referral Capture ---
         const startParam = tg?.initDataUnsafe?.start_param; 
         
         const res = await fetch('/api/user/sync', {
@@ -681,24 +729,22 @@ export default function App() {
         
         const data = await res.json();
         
-        if (data.error) {
-          if (data.error === 'MISSING_TABLE') {
-            setErrorDetails(data.message);
-          } else {
-            setErrorDetails(data.message || data.error);
-          }
-          throw new Error(data.message || data.error);
-        }
+        if (data.error) throw new Error(data.message || data.error);
         
-        setUser(data);
+        if (data.user) {
+          setUser(data.user);
+          setReferralCount(data.referralCount || 0);
+        } else {
+          setUser(data);
+        }
       } catch (err: any) {
-        const errorMsg = err.message || JSON.stringify(err);
-        console.error('Sync Error:', errorMsg);
-        if (!errorDetails) setErrorDetails(errorMsg);
+        console.error('Sync Error:', err.message);
+        setErrorDetails(err.message);
       } finally {
         setLoading(false);
       }
     };
+
     sync();
   }, []);
 
@@ -736,7 +782,7 @@ export default function App() {
   return (
     <TonConnectUIProvider manifestUrl={`${window.location.origin}/tonconnect-manifest.json`}>
       <div className="min-h-screen bg-[#0f172a] pb-32">
-        <Header user={user} />
+        <Header user={user} setActiveTab={setActiveTab} />
         
         <main className="pt-24 min-h-screen max-w-lg mx-auto">
           <AnimatePresence mode="wait">

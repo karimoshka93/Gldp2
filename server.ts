@@ -149,6 +149,7 @@ async function startServer() {
               extra_combat_matches: 0,
               combat_matches_today: 0,
               last_claim_at: new Date().toISOString(),
+              last_energy_reset_at: new Date().toISOString(),
               code_task_states: {},
               daily_quest_states: {}
             }
@@ -158,6 +159,25 @@ async function startServer() {
 
         if (createError) throw createError;
         user = newUser;
+      } else {
+        // Daily Energy Reset Check
+        const now = new Date();
+        const lastReset = user.last_energy_reset_at ? new Date(user.last_energy_reset_at) : new Date(0);
+        
+        // Reset if it's a different calendar day
+        if (now.toDateString() !== lastReset.toDateString()) {
+           const { data: updatedUser, error: updateError } = await supabase
+            .from('profiles')
+            .update({
+              energy: 1000,
+              last_energy_reset_at: now.toISOString()
+            })
+            .eq('id', telegramId.toString())
+            .select()
+            .single();
+          
+          if (!updateError) user = updatedUser;
+        }
       }
 
       res.json(user);
@@ -167,7 +187,25 @@ async function startServer() {
     }
   });
 
-  // Claim Passive Income
+  // Sync Balance (Aggressive Save)
+  app.post('/api/user/sync-balance', validateTelegramData, async (req, res) => {
+    try {
+      const { telegramId, balance, energy } = req.body;
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({ balance, energy })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+      
+      if (error) throw error;
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Claim Passive Income (Flexible - Any Time)
   app.post('/api/user/claim', validateTelegramData, async (req, res) => {
     try {
       const { telegramId } = req.body;
@@ -183,11 +221,13 @@ async function startServer() {
       const now = new Date();
       const lastClaim = new Date(user.last_claim_at);
       const diffMs = now.getTime() - lastClaim.getTime();
-      const diffHrs = diffMs / (1000 * 60 * 60);
+      const diffSecs = diffMs / 1000;
       
-      // Max 4 hours of passive income
-      const effectiveHours = Math.min(diffHrs, 4);
-      const earnings = Math.floor(effectiveHours * 3600 * user.active_multiplier);
+      // Calculate earnings based on per-second rate
+      // Allow claiming at any time if earned > 0
+      const earnings = Math.floor(diffSecs * user.active_multiplier);
+      
+      if (earnings <= 0) return res.status(400).json({ error: 'Nothing to claim yet' });
 
       const { data: updatedUser, error: updateError } = await supabase
         .from('profiles')

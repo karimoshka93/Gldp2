@@ -10,6 +10,7 @@ export interface UserProfile {
   extra_combat_matches: number;
   combat_matches_today: number;
   last_claim_at: string;
+  photo_url?: string | null;
   created_at: string;
   code_task_states: Record<string, any>;
   daily_quest_states: Record<string, any>;
