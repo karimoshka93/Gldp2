@@ -187,6 +187,102 @@ async function startServer() {
     }
   });
 
+  // Adsgram Reward Endpoint (GET as per Adsgram tooltip)
+  app.get('/api/adsgram/reward', async (req, res) => {
+    try {
+      const { userid } = req.query;
+      if (!userid) return res.status(400).send('Missing userid');
+
+      const { data: user, error: fetchError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userid.toString())
+        .single();
+
+      if (fetchError || !user) return res.status(404).send('User not found');
+
+      // Check ad count/cooldown
+      const questStates = user.daily_quest_states || {};
+      const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
+      
+      if (adState.count >= 10) return res.status(400).send('Limit reached');
+      
+      const now = Date.now();
+      const oneHour = 60 * 60 * 1000;
+      if (now - adState.last_ad_at < oneHour) return res.status(400).send('On cooldown');
+
+      // Update user
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          balance: user.balance + 2500,
+          airdrop_rank: user.airdrop_rank + 15,
+          daily_quest_states: {
+            ...questStates,
+            adsgram: {
+              count: adState.count + 1,
+              last_ad_at: now
+            }
+          }
+        })
+        .eq('id', userid.toString());
+
+      if (updateError) throw updateError;
+      
+      res.send('Reward granted');
+    } catch (err: any) {
+      console.error('Adsgram Reward Error:', err);
+      res.status(500).send('Internal error');
+    }
+  });
+
+  // Manual Quest Complete (For social links)
+  app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
+    try {
+      const { telegramId, questId, reward, points } = req.body;
+      
+      const { data: user, error: fetchError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', telegramId.toString())
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      const now = new Date();
+      const questStates = user.daily_quest_states || {};
+      
+      // Check if already completed today
+      if (questStates[questId]) {
+        if (typeof questStates[questId] === 'string') {
+           const lastDone = new Date(questStates[questId]);
+           if (lastDone.toDateString() === now.toDateString()) {
+             return res.status(400).json({ error: 'Already completed today' });
+           }
+        }
+      }
+
+      const { data: updatedUser, error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          balance: user.balance + reward,
+          airdrop_rank: user.airdrop_rank + points,
+          daily_quest_states: {
+            ...questStates,
+            [questId]: now.toISOString()
+          }
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+      res.json(updatedUser);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Sync Balance (Aggressive Save)
   app.post('/api/user/sync-balance', validateTelegramData, async (req, res) => {
     try {
@@ -260,14 +356,20 @@ async function startServer() {
 
       if (fetchError) throw fetchError;
 
-      if (user.balance < cost) {
+      // Add a small 2-point buffer for rapid tapping sync delay
+      const effectiveBalance = user.balance + 2;
+
+      if (effectiveBalance < cost) {
         return res.status(400).json({ error: 'Insufficient balance' });
       }
+
+      // Ensure we never go below 0
+      const newBalance = Math.max(0, user.balance - cost);
 
       const { data: updatedUser, error: updateError } = await supabase
         .from('profiles')
         .update({
-          balance: user.balance - cost,
+          balance: newBalance,
           active_multiplier: user.active_multiplier + boost
         })
         .eq('id', telegramId.toString())
@@ -285,14 +387,55 @@ async function startServer() {
   // Leaderboard
   app.get('/api/leaderboard', async (req, res) => {
     try {
+      const { sortBy = 'airdrop_rank' } = req.query;
+      const validSorts = ['airdrop_rank', 'active_multiplier'];
+      const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdrop_rank';
+
       const { data, error } = await supabase
         .from('profiles')
-        .select('id, username, first_name, airdrop_rank')
-        .order('airdrop_rank', { ascending: false })
+        .select('id, username, first_name, airdrop_rank, active_multiplier, photo_url')
+        .order(sortColumn, { ascending: false })
         .limit(200);
 
       if (error) throw error;
       res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Dedicated Firebase Points Sync
+  app.post('/api/user/sync-firebase-points', validateTelegramData, async (req, res) => {
+    try {
+      const { telegramId } = req.body;
+      if (!firestore) return res.status(400).json({ error: 'Migration bridge not configured' });
+
+      // Look up in Firestore
+      const docRef = firestore.collection('users').doc(telegramId.toString());
+      const docSnap = await docRef.get();
+      let firestoreUser: any = null;
+
+      if (docSnap.exists) {
+        firestoreUser = docSnap.data();
+      } else {
+        const querySnap = await firestore.collection('users').where('telegram_id', '==', telegramId.toString()).limit(1).get();
+        if (!querySnap.empty) firestoreUser = querySnap.docs[0].data();
+      }
+
+      if (!firestoreUser) return res.status(404).json({ error: 'No old data found for this user' });
+
+      const oldPoints = firestoreUser.airdrop_rank || firestoreUser.rank || 0;
+
+      // Update Supabase
+      const { data: updatedUser, error: updateError } = await supabase
+        .from('profiles')
+        .update({ airdrop_rank: oldPoints })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+      res.json(updatedUser);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

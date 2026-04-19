@@ -27,7 +27,8 @@ import {
   Code,
   HardDrive,
   Send,
-  Crown
+  Crown,
+  RefreshCcw
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { 
@@ -45,9 +46,8 @@ import {
 const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
   const tabs = [
     { id: 'home', icon: HomeIcon, label: 'Home' },
-    { id: 'developers', icon: Users, label: 'Devs' },
-    { id: 'games', icon: Gamepad2, label: 'Soon', disabled: true },
-    { id: 'combat', icon: Sword, label: 'Soon', disabled: true },
+    { id: 'developers', icon: Code, label: 'Devs' },
+    { id: 'ranking', icon: Trophy, label: 'Ranking' },
     { id: 'missions', icon: Target, label: 'Quests' },
     { id: 'wallet', icon: WalletIcon, label: 'Wallet' },
   ];
@@ -57,11 +57,10 @@ const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: 
       {tabs.map((tab) => (
         <button
           key={tab.id}
-          onClick={() => !tab.disabled && setActiveTab(tab.id)}
+          onClick={() => setActiveTab(tab.id)}
           className={cn(
             "tab-item group relative",
-            activeTab === tab.id ? "text-[#facc15]" : "text-[#94a3b8]",
-            tab.disabled && "opacity-30 cursor-not-allowed"
+            activeTab === tab.id ? "text-[#facc15]" : "text-[#94a3b8]"
           )}
         >
           <tab.icon className={cn("w-6 h-6 transition-transform", activeTab === tab.id && "scale-110")} />
@@ -106,7 +105,7 @@ const Header = ({ user, setActiveTab }: { user: UserProfile | null, setActiveTab
   </header>
 );
 
-const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfile) => void }) => {
+const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (u: UserProfile) => void, syncBalance: (b: number, e: number) => Promise<void> }) => {
   const [tapValue, setTapValue] = useState(user.balance);
   const [floatingTexts, setFloatingTexts] = useState<{ id: number, x: number, y: number }[]>([]);
   const tapCooldownRef = useRef<NodeJS.Timeout | null>(null);
@@ -128,18 +127,6 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
     }, 1000);
     return () => clearInterval(interval);
   }, [user.last_claim_at, user.active_multiplier]);
-
-  const syncBalance = async (newBalance: number, newEnergy: number) => {
-    try {
-      await fetch('/api/user/sync-balance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telegramId: user.id, balance: newBalance, energy: newEnergy })
-      });
-    } catch (err) {
-      console.error("Critical Sync Error:", err);
-    }
-  };
 
   const handleTap = (e: React.MouseEvent | React.TouchEvent) => {
     const x = 'touches' in e ? e.touches[0].clientX : e.clientX;
@@ -322,7 +309,7 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
   );
 };
 
-const DevelopersTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfile) => void }) => {
+const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (u: UserProfile) => void, syncBalance: (b: number, e: number) => Promise<void> }) => {
   const devIcons = [Cpu, Globe, Database, Terminal, Shield, Workflow, Layers, Server, Code, HardDrive];
   
   const devs: DeveloperCard[] = Array.from({ length: 30 }, (_, i) => ({
@@ -337,6 +324,9 @@ const DevelopersTab = ({ user, setUser }: { user: UserProfile, setUser: (u: User
   const handleUpgrade = async (dev: DeveloperCard) => {
     try {
       if (user.balance < dev.base_cost) return alert("Insufficient GLDp!");
+      
+      // Force sync balance before upgrade to ensure DB is up to date
+      await syncBalance(user.balance, user.energy);
       
       const res = await fetch('/api/user/upgrade', {
         method: 'POST',
@@ -399,38 +389,168 @@ const DevelopersTab = ({ user, setUser }: { user: UserProfile, setUser: (u: User
   );
 };
 
-const MissionsTab = ({ user, referralCount }: { user: UserProfile, referralCount: number }) => {
+const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, referralCount: number, setUser: (u: UserProfile) => void }) => {
+  const [claiming, setClaiming] = useState<string | null>(null);
+  const [adCooldown, setAdCooldown] = useState<number>(0);
+  const [adCount, setAdCount] = useState(0);
+
   const missions: Mission[] = [
-    { id: '1', title: 'Join our Telegram Channel', reward: 5000, points: 10, type: 'social' },
-    { id: '2', title: 'Follow us on X', reward: 5000, points: 10, type: 'social' },
-    { id: '3', title: 'Daily Login Reward', reward: 1000, points: 5, type: 'daily' },
-    { id: '4', title: 'Watch Ads (5/5)', reward: 2500, points: 15, type: 'daily' },
+    { id: 'daily_login', title: 'Daily Login Reward', reward: 1000, points: 5, type: 'daily' },
+    { id: 'tg_post', title: 'Check latest Telegram post', reward: 2000, points: 10, type: 'social', link: 'https://t.me/digitalgold2025' },
+    { id: 'x_post', title: 'Check latest X post', reward: 2000, points: 10, type: 'social', link: 'https://x.com/DigitalGold2025' },
+    { id: 'ig_post', title: 'Check latest Instagram post', reward: 2000, points: 10, type: 'social', link: 'https://instagram.com/digitalgold11' },
+    { id: 'mining_gld', title: 'Mine Real GLD Network', reward: 5000, points: 25, type: 'social', link: 'https://digitalgold.com.ru' },
+    { id: 'adsgram', title: 'Watch Ads for GLDp (10/10)', reward: 2500, points: 15, type: 'ads' },
   ];
+
+  // Update ad state from user profile
+  useEffect(() => {
+    if (user.daily_quest_states?.adsgram) {
+      const { count, last_ad_at } = user.daily_quest_states.adsgram;
+      setAdCount(count || 0);
+      const now = Date.now();
+      const timeLeft = Math.max(0, (last_ad_at + 3600000) - now);
+      setAdCooldown(Math.ceil(timeLeft / 1000));
+    }
+  }, [user.daily_quest_states]);
+
+  // Cooldown timer
+  useEffect(() => {
+    if (adCooldown <= 0) return;
+    const interval = setInterval(() => {
+      setAdCooldown(prev => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [adCooldown]);
+
+  const handleQuestAction = async (m: Mission) => {
+    if (claiming) return;
+
+    // Check if already done today
+    const questState = user.daily_quest_states?.[m.id];
+    if (questState && m.type !== 'ads') {
+      const lastDone = new Date(questState);
+      if (lastDone.toDateString() === new Date().toDateString()) {
+        alert('You already completed this quest today! Come back tomorrow.');
+        return;
+      }
+    }
+
+    if (m.type === 'social') {
+      // Open link
+      window.open(m.link, '_blank');
+      setClaiming(m.id);
+      
+      // Wait for user to "leave" and come back (approx simulation)
+      alert("Please check the post and come back to claim your reward!");
+      
+      setTimeout(async () => {
+        try {
+          const res = await fetch('/api/user/complete-quest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              telegramId: user.id,
+              questId: m.id,
+              reward: m.reward,
+              points: m.points
+            })
+          });
+          const data = await res.json();
+          if (data.id) setUser(data);
+        } catch (err) {
+          console.error(err);
+        } finally {
+          setClaiming(null);
+        }
+      }, 5000); // 5 second delay to ensure they "left"
+      
+    } else if (m.type === 'daily') {
+      setClaiming(m.id);
+      try {
+        const res = await fetch('/api/user/complete-quest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            telegramId: user.id,
+            questId: m.id,
+            reward: m.reward,
+            points: m.points
+          })
+        });
+        const data = await res.json();
+        if (data.id) setUser(data);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setClaiming(null);
+      }
+    } else if (m.type === 'ads') {
+      if (adCount >= 10) return alert('Daily ads limit reached!');
+      if (adCooldown > 0) return alert(`Please wait ${Math.floor(adCooldown/60)}m ${adCooldown%60}s for next ad`);
+
+      // Adsgram logic
+      // @ts-ignore
+      if (window.Adsgram) {
+        // @ts-ignore
+        const AdController = window.Adsgram.init({ blockId: "28171" });
+        AdController.show().then(() => {
+          // Success
+          alert('Ad watched successfully! Your reward is being processed...');
+          // The backend reward URL will handle the balance update
+          // We trigger a sync here to refresh local state after a delay
+          setTimeout(async () => {
+            const res = await fetch('/api/user/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ telegramId: user.id })
+            });
+            const data = await res.json();
+            if (data.id) setUser(data);
+          }, 3000);
+        }).catch((err: any) => {
+          console.error("Ad error:", err);
+          alert('Ad failed to load or was skipped.');
+        });
+      } else {
+        alert('Adsgram SDK not loaded yet.');
+      }
+    }
+  };
 
   const shareLink = `https://t.me/GLDp_bot/app?startapp=${user.id}`;
   const telegramShare = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent('Join me on GLD Tap and earn tokens! 🚀')}`;
 
-  const copyLink = () => {
-    navigator.clipboard.writeText(shareLink);
-    alert('Invite link copied to clipboard!');
+  const isCompleted = (id: string) => {
+    const state = user.daily_quest_states?.[id];
+    if (!state) return false;
+    return new Date(state).toDateString() === new Date().toDateString();
   };
 
   return (
     <div className="px-6 pb-24 space-y-4 pt-6">
-      <h2 className="text-2xl font-black gold-gradient uppercase">GLD Quests</h2>
-      <p className="text-xs text-neutral-500 uppercase font-bold tracking-widest">Complete tasks to climb the Airdrop Rank</p>
+      <div className="text-center mb-6">
+        <h2 className="text-3xl font-black gold-gradient uppercase tracking-tighter">GLD Missions</h2>
+        <p className="text-[10px] text-neutral-500 uppercase font-bold tracking-widest mt-1">Boost your Airdrop Eligibility</p>
+      </div>
       
       {/* Referral Section */}
-      <div className="glass-card p-5 border-blue-500/30 bg-blue-500/5">
-        <div className="flex flex-col gap-4">
+      <div className="glass-card p-5 border-indigo-500/30 bg-indigo-500/5 relative overflow-hidden group">
+        <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/10 blur-[40px] pointer-events-none rounded-full"></div>
+        <div className="flex flex-col gap-4 relative">
           <div className="flex items-center justify-between">
-            <div>
-              <p className="font-bold text-sm">Invite Friends</p>
-              <p className="text-[10px] text-blue-400 font-mono">+50 Activity Points per friend</p>
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-indigo-500/10 rounded-lg">
+                <Users className="w-5 h-5 text-indigo-400" />
+              </div>
+              <div>
+                <p className="font-black text-sm text-white">Network Growth</p>
+                <p className="text-[10px] text-indigo-400 font-mono">+50 Points / Invite</p>
+              </div>
             </div>
             <div className="text-right">
                <p className="text-xl font-black text-white">{referralCount}</p>
-               <p className="text-[8px] uppercase font-bold text-neutral-500">Joined</p>
+               <p className="text-[8px] uppercase font-bold text-neutral-500">Recruits</p>
             </div>
           </div>
           
@@ -439,50 +559,113 @@ const MissionsTab = ({ user, referralCount }: { user: UserProfile, referralCount
               href={telegramShare}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex-1 py-3 bg-blue-500 text-white rounded-xl text-xs font-black flex items-center justify-center gap-2 active:scale-95 transition-all shadow-lg shadow-blue-500/20"
+              className="flex-1 py-3 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl text-xs font-black flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xl shadow-blue-500/20 uppercase tracking-widest"
             >
-              <Send className="w-3 h-3" />
-              SHARE LINK
+              <Send className="w-4 h-4" />
+              INVITE
             </a>
             <button 
-              onClick={copyLink}
-              className="px-6 py-3 bg-[#1e293b] text-white rounded-xl text-xs font-black border border-[#334155] active:scale-95 transition-all"
+              onClick={() => {
+                navigator.clipboard.writeText(shareLink);
+                alert('Copied link!');
+              }}
+              className="px-6 py-3 bg-[#1e293b] text-white rounded-xl text-xs font-black border border-white/5 active:scale-95 transition-all uppercase tracking-widest"
             >
-              COPY
+              LINK
             </button>
           </div>
         </div>
       </div>
 
       <div className="space-y-3">
-        {missions.map(m => (
-          <div key={m.id} className="glass-card p-5 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-neutral-900 rounded-xl">
-                 {m.type === 'daily' ? <Clock className="w-5 h-5 text-blue-400" /> : <Target className="w-5 h-5 text-purple-400" />}
-              </div>
-              <div>
-                <p className="text-sm font-bold">{m.title}</p>
-                <div className="flex items-center gap-3 mt-1">
-                  <span className="text-[10px] font-mono text-yellow-500">+{m.reward.toLocaleString()} GLDp</span>
-                  <span className="text-[10px] font-mono text-purple-400">+{m.points} Points</span>
+        {missions.map(m => {
+          const done = m.type === 'ads' ? adCount >= 10 : isCompleted(m.id);
+          const onCooldown = m.type === 'ads' && adCooldown > 0;
+
+          return (
+            <motion.div 
+              key={m.id} 
+              whileTap={{ scale: done ? 1 : 0.98 }}
+              onClick={() => !done && !claiming && handleQuestAction(m)}
+              className={cn(
+                "glass-card p-5 flex items-center justify-between border-white/5 transition-all",
+                done ? "opacity-50 grayscale bg-white/5" : "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
+                claiming === m.id && "animate-pulse border-blue-500/50"
+              )}
+            >
+              <div className="flex items-center gap-4">
+                <div className={cn(
+                  "p-3 rounded-xl",
+                  m.type === 'daily' ? "bg-blue-500/10 text-blue-400" :
+                  m.type === 'social' ? "bg-purple-500/10 text-purple-400" :
+                  "bg-orange-500/10 text-orange-400"
+                )}>
+                   {m.type === 'daily' ? <Clock className="w-5 h-5" /> : 
+                    m.type === 'social' ? <Target className="w-5 h-5" /> : 
+                    <Cpu className="w-5 h-5" />}
+                </div>
+                <div>
+                  <p className="text-xs font-black text-white uppercase tracking-tight">
+                    {m.title}
+                    {m.type === 'ads' && ` (${adCount}/10)`}
+                  </p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-[10px] font-mono text-yellow-500 font-bold">+{m.reward.toLocaleString()} GLDp</span>
+                    <span className="text-[10px] font-mono text-indigo-400 font-bold">+{m.points} POINTS</span>
+                  </div>
                 </div>
               </div>
-            </div>
-            <ChevronRight className="w-5 h-5 opacity-20" />
-          </div>
-        ))}
+              
+              {done ? (
+                <div className="p-1 px-3 bg-white/10 rounded-full text-[8px] font-black uppercase text-neutral-400">Done</div>
+              ) : onCooldown ? (
+                <div className="text-[10px] font-mono text-neutral-500 font-bold">
+                  {Math.floor(adCooldown/60)}m {adCooldown%60}s
+                </div>
+              ) : claiming === m.id ? (
+                <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <ChevronRight className="w-5 h-5 opacity-20" />
+              )}
+            </motion.div>
+          );
+        })}
       </div>
     </div>
   );
 };
 
-const ProfilePage = ({ user, referralCount }: { user: UserProfile, referralCount: number }) => {
+const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, referralCount: number, setUser: (u: UserProfile) => void }) => {
   const shareLink = `https://t.me/GLDp_bot/app?startapp=${user.id}`;
   const telegramShare = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent('Join me on GLD Tap and earn tokens! 🚀')}`;
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const syncOldPoints = async () => {
+    try {
+      setIsSyncing(true);
+      const res = await fetch('/api/user/sync-firebase-points', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ telegramId: user.id })
+      });
+      const data = await res.json();
+      if (data.id) {
+        setUser(data);
+        alert('Old activity points successfully synchronized!');
+      } else {
+        alert(data.error || 'No old data found for this account.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Sync failed. Please try again later.');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   return (
     <div className="px-6 space-y-6 pt-6 pb-24">
+      {/* Profile Header */}
       <div className="flex flex-col items-center gap-4 py-8">
         <div className="w-28 h-28 rounded-full bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 p-1.5 shadow-[0_0_40px_rgba(139,92,246,0.3)]">
           <div className="w-full h-full rounded-full bg-[#0f172a] overflow-hidden border-2 border-[#1e293b]">
@@ -501,6 +684,16 @@ const ProfilePage = ({ user, referralCount }: { user: UserProfile, referralCount
           </div>
         </div>
       </div>
+
+      {/* Sync Button */}
+      <button 
+        onClick={syncOldPoints}
+        disabled={isSyncing}
+        className="w-full py-4 glass-card border-yellow-500/30 bg-yellow-500/5 text-yellow-500 font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
+      >
+        <RefreshCcw className={cn("w-4 h-4", isSyncing && "animate-spin")} />
+        {isSyncing ? "SYNCING..." : "SYNC ACTIVITY POINTS FROM V1"}
+      </button>
 
       <div className="grid grid-cols-2 gap-3">
         <div className="glass-card p-4 flex flex-col items-center text-center border-white/5 bg-[#1e293b]/30">
@@ -560,114 +753,182 @@ const ProfilePage = ({ user, referralCount }: { user: UserProfile, referralCount
     </div>
   );
 };
-const LeaderboardTab = () => {
+const RankingTab = ({ user }: { user: UserProfile }) => {
   const [leaders, setLeaders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sortBy, setSortBy] = useState('airdrop_rank');
 
   useEffect(() => {
-    fetch('/api/leaderboard')
+    setLoading(true);
+    fetch(`/api/leaderboard?sortBy=${sortBy}`)
       .then(res => res.json())
       .then(data => {
         setLeaders(data || []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [sortBy]);
 
-  if (loading) return <div className="text-center py-20 animate-pulse text-yellow-500 font-black">LOADING WORLD RANKINGS...</div>;
+  // Find current user position
+  const userRank = leaders.findIndex(l => l.id === user.id) + 1;
 
   const top3 = leaders.slice(0, 3);
-  const rest = leaders.slice(3, 200);
+  const rest = leaders.slice(3, 100);
+
+  const getMetric = (l: any) => {
+    if (sortBy === 'active_multiplier') return `+${Math.floor(l.active_multiplier * 3600)}/h`;
+    return l.airdrop_rank.toLocaleString();
+  };
 
   return (
-    <div className="px-4 pb-24 pt-6">
-      <div className="text-center mb-8">
-        <h2 className="text-3xl font-black uppercase tracking-tighter gold-gradient">Activity Ranking</h2>
-        <p className="text-[10px] text-neutral-500 font-bold uppercase tracking-widest mt-1">Top 200 Legends</p>
+    <div className="px-4 pb-24 pt-6 space-y-6">
+      {/* Announcement */}
+      <div className="glass-card p-4 border-yellow-500/20 bg-yellow-500/5 relative overflow-hidden">
+        <div className="flex items-start gap-3 relative">
+          <div className="p-2 bg-yellow-500/10 rounded-lg">
+             <Trophy className="w-5 h-5 text-yellow-500" />
+          </div>
+          <div>
+            <p className="text-[10px] text-neutral-500 uppercase font-black tracking-widest mb-1">Growth Intelligence</p>
+            <p className="text-xs text-white/80 leading-relaxed">
+              Ascend ranks by completing <span className="text-yellow-500 font-bold">Quests</span>. Increase your hourly dividends by acquiring <span className="text-indigo-400 font-bold">Dev Personnel</span> in the roster.
+            </p>
+          </div>
+        </div>
       </div>
 
-      {/* Podium */}
-      <div className="relative flex items-end justify-center gap-2 mb-10 h-64 px-2 pt-12">
-        {/* 2nd Place */}
-        {top3[1] && (
-          <div className="flex flex-col items-center gap-2 flex-1 max-w-[100px]">
-            <div className="relative">
-              <div className="w-16 h-16 rounded-full border-2 border-slate-300 overflow-hidden bg-[#1e293b] shadow-lg">
-                {top3[1].photo_url ? <img src={top3[1].photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-slate-300">{top3[1].username?.[0]?.toUpperCase()}</div>}
-              </div>
-              <div className="absolute -bottom-2 -right-1 bg-slate-300 text-slate-900 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-[#0f172a]">2</div>
-            </div>
-            <div className="w-full bg-slate-800/20 rounded-t-xl h-24 flex flex-col items-center justify-center p-2 border-x border-t border-slate-300/20">
-              <p className="text-[10px] font-black truncate w-full text-center text-white">@{top3[1].username}</p>
-              <p className="text-xs font-mono font-bold text-slate-300">{top3[1].airdrop_rank.toLocaleString()}</p>
-            </div>
-          </div>
-        )}
-
-        {/* 1st Place */}
-        {top3[0] && (
-          <div className="flex flex-col items-center gap-2 flex-1 max-w-[120px] -translate-y-4">
-            <div className="relative">
-              <div className="absolute -top-6 left-1/2 -translate-x-1/2">
-                <Crown className="w-8 h-8 text-yellow-500 drop-shadow-[0_0_15px_rgba(234,179,8,0.5)]" />
-              </div>
-              <div className="w-20 h-20 rounded-full border-4 border-yellow-500 overflow-hidden bg-[#1e293b] shadow-[0_0_30px_rgba(234,179,8,0.2)]">
-                {top3[0].photo_url ? <img src={top3[0].photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-black text-2xl text-yellow-500">{top3[0].username?.[0]?.toUpperCase()}</div>}
-              </div>
-              <div className="absolute -bottom-2 -right-1 bg-yellow-500 text-yellow-900 text-xs font-black w-8 h-8 rounded-full flex items-center justify-center border-4 border-[#0f172a]">1</div>
-            </div>
-            <div className="w-full bg-yellow-500/10 rounded-t-2xl h-32 flex flex-col items-center justify-center p-2 border-x border-t border-yellow-500/30 shadow-[0_-10px_30px_rgba(234,179,8,0.05)]">
-              <p className="text-xs font-black truncate w-full text-center text-yellow-500">@{top3[0].username}</p>
-              <p className="text-sm font-mono font-black text-white">{top3[0].airdrop_rank.toLocaleString()}</p>
-            </div>
-          </div>
-        )}
-
-        {/* 3rd Place */}
-        {top3[2] && (
-          <div className="flex flex-col items-center gap-2 flex-1 max-w-[100px]">
-            <div className="relative">
-              <div className="w-16 h-16 rounded-full border-2 border-amber-600 overflow-hidden bg-[#1e293b] shadow-lg">
-                {top3[2].photo_url ? <img src={top3[2].photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-amber-600">{top3[2].username?.[0]?.toUpperCase()}</div>}
-              </div>
-              <div className="absolute -bottom-2 -right-1 bg-amber-600 text-amber-100 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-[#0f172a]">3</div>
-            </div>
-            <div className="w-full bg-amber-900/10 rounded-t-xl h-20 flex flex-col items-center justify-center p-2 border-x border-t border-amber-600/20">
-              <p className="text-[10px] font-black truncate w-full text-center text-white">@{top3[2].username}</p>
-              <p className="text-xs font-mono font-bold text-amber-600">{top3[2].airdrop_rank.toLocaleString()}</p>
-            </div>
-          </div>
-        )}
+      {/* Sorting Tabs */}
+      <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
+        <button 
+          onClick={() => setSortBy('airdrop_rank')}
+          className={cn(
+            "flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+            sortBy === 'airdrop_rank' ? "bg-white text-black shadow-lg" : "text-neutral-500"
+          )}
+        >
+          Activity
+        </button>
+        <button 
+          onClick={() => setSortBy('active_multiplier')}
+          className={cn(
+            "flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+            sortBy === 'active_multiplier' ? "bg-white text-black shadow-lg" : "text-neutral-500"
+          )}
+        >
+          Earnings
+        </button>
+        <button 
+          disabled
+          className="flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest text-neutral-700 cursor-not-allowed group relative"
+        >
+          Combat
+          <span className="absolute -top-1 -right-1 bg-neutral-800 text-[6px] px-1 rounded border border-white/10">SOON</span>
+        </button>
       </div>
 
-      {/* List */}
-      <div className="space-y-2">
-        {rest.map((l, i) => (
-          <motion.div 
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: i * 0.02 }}
-            key={l.id || i}
-            className="glass-card p-4 flex items-center justify-between border-white/5 bg-white/5 hover:bg-white/10 transition-colors"
-          >
-            <div className="flex items-center gap-4">
-              <span className="text-[10px] font-black text-neutral-500 w-6">#{i + 4}</span>
-              <div className="w-10 h-10 rounded-full border border-white/10 overflow-hidden bg-neutral-900">
-                {l.photo_url ? <img src={l.photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-xs font-bold">{l.username?.[0]?.toUpperCase()}</div>}
+      {loading ? (
+        <div className="text-center py-20 animate-pulse text-yellow-500 font-black">CALCULATING NETWORK HIERARCHY...</div>
+      ) : (
+        <>
+          {/* Podium */}
+          <div className="relative flex items-end justify-center gap-2 h-60 px-2 pt-12">
+            {/* 2nd Place */}
+            {top3[1] && (
+              <div className="flex flex-col items-center gap-2 flex-1 max-w-[100px]">
+                <div className="relative">
+                  <div className="w-16 h-16 rounded-full border-2 border-slate-300 overflow-hidden bg-[#1e293b] shadow-lg">
+                    {top3[1].photo_url ? <img src={top3[1].photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-slate-300">{top3[1].username?.[0]?.toUpperCase()}</div>}
+                  </div>
+                  <div className="absolute -bottom-2 -right-1 bg-slate-300 text-slate-900 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-[#0f172a]">2</div>
+                </div>
+                <div className="w-full bg-slate-800/20 rounded-t-xl h-24 flex flex-col items-center justify-center p-2 border-x border-t border-slate-300/20 text-center">
+                  <p className="text-[10px] font-black truncate w-full text-white">@{top3[1].username}</p>
+                  <p className="text-xs font-mono font-bold text-slate-300">{getMetric(top3[1])}</p>
+                </div>
               </div>
-              <div>
-                <p className="font-bold text-sm text-white">@{l.username}</p>
-                <p className="text-[10px] text-neutral-500 leading-none">{l.first_name || 'Legend'}</p>
+            )}
+
+            {/* 1st Place */}
+            {top3[0] && (
+              <div className="flex flex-col items-center gap-2 flex-1 max-w-[120px] -translate-y-4">
+                <div className="relative">
+                  <div className="absolute -top-6 left-1/2 -translate-x-1/2">
+                    <Crown className="w-8 h-8 text-yellow-500 drop-shadow-[0_0_15px_rgba(234,179,8,0.5)]" />
+                  </div>
+                  <div className="w-20 h-20 rounded-full border-4 border-yellow-500 overflow-hidden bg-[#1e293b] shadow-[0_0_30px_rgba(234,179,8,0.2)]">
+                    {top3[0].photo_url ? <img src={top3[0].photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-black text-2xl text-yellow-500">{top3[0].username?.[0]?.toUpperCase()}</div>}
+                  </div>
+                  <div className="absolute -bottom-2 -right-1 bg-yellow-500 text-yellow-900 text-xs font-black w-8 h-8 rounded-full flex items-center justify-center border-4 border-[#0f172a]">1</div>
+                </div>
+                <div className="w-full bg-yellow-500/10 rounded-t-2xl h-32 flex flex-col items-center justify-center p-2 border-x border-t border-yellow-500/30 text-center">
+                  <p className="text-xs font-black truncate w-full text-yellow-500">@{top3[0].username}</p>
+                  <p className="text-sm font-mono font-black text-white">{getMetric(top3[0])}</p>
+                </div>
               </div>
+            )}
+
+            {/* 3rd Place */}
+            {top3[2] && (
+              <div className="flex flex-col items-center gap-2 flex-1 max-w-[100px]">
+                <div className="relative">
+                  <div className="w-16 h-16 rounded-full border-2 border-amber-600 overflow-hidden bg-[#1e293b] shadow-lg">
+                    {top3[2].photo_url ? <img src={top3[2].photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-amber-600">{top3[2].username?.[0]?.toUpperCase()}</div>}
+                  </div>
+                  <div className="absolute -bottom-2 -right-1 bg-amber-600 text-amber-100 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-[#0f172a]">3</div>
+                </div>
+                <div className="w-full bg-amber-900/10 rounded-t-xl h-20 flex flex-col items-center justify-center p-2 border-x border-t border-amber-600/20 text-center">
+                  <p className="text-[10px] font-black truncate w-full text-white">@{top3[2].username}</p>
+                  <p className="text-xs font-mono font-bold text-amber-600">{getMetric(top3[2])}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            {rest.map((l, i) => (
+              <motion.div 
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: i * 0.02 }}
+                key={l.id || l.username}
+                className="glass-card p-4 flex items-center justify-between border-white/5 bg-white/5"
+              >
+                <div className="flex items-center gap-4">
+                  <span className="text-[10px] font-black text-neutral-500 w-6">#{i + 4}</span>
+                  <div className="w-10 h-10 rounded-full border border-white/10 overflow-hidden bg-neutral-900">
+                    {l.photo_url ? <img src={l.photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-xs font-bold">{l.username?.[0]?.toUpperCase()}</div>}
+                  </div>
+                  <div>
+                    <p className="font-bold text-sm text-white">@{l.username}</p>
+                    <p className="text-[10px] text-neutral-500 lowercase">Verified Player</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-sm font-mono font-black text-white">{getMetric(l)}</span>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+
+          {/* Sticky User Rank */}
+          {userRank > 0 && (
+            <div className="fixed bottom-24 left-1/2 -translate-x-1/2 w-full max-w-sm px-4 pointer-events-none">
+               <div className="glass-card p-4 bg-yellow-500 text-black border-none flex items-center justify-between shadow-2xl pointer-events-auto">
+                 <div className="flex items-center gap-3">
+                   <span className="text-xs font-black">#{userRank}</span>
+                   <div className="w-8 h-8 rounded-full overflow-hidden border-2 border-black/20">
+                     {user.photo_url ? <img src={user.photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-xs">{user.username?.[0]?.toUpperCase()}</div>}
+                   </div>
+                   <p className="font-black text-xs">@{user.username} (You)</p>
+                 </div>
+                 <span className="font-mono font-black text-xs">
+                   {sortBy === 'active_multiplier' ? `+${Math.floor(user.active_multiplier * 3600)}/h` : user.airdrop_rank.toLocaleString()}
+                 </span>
+               </div>
             </div>
-            <div className="text-right">
-              <span className="text-sm font-mono font-black text-white">{l.airdrop_rank.toLocaleString()}</span>
-              <p className="text-[7px] uppercase font-bold text-neutral-500 text-right tracking-tighter">Points</p>
-            </div>
-          </motion.div>
-        ))}
-        {leaders.length === 0 && <p className="text-center py-20 opacity-30 italic">Searching for legends...</p>}
-      </div>
+          )}
+        </>
+      )}
     </div>
   );
 };
@@ -696,6 +957,18 @@ export default function App() {
   const [referralCount, setReferralCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
+
+  const syncBalance = async (newBalance: number, newEnergy: number) => {
+    try {
+      await fetch('/api/user/sync-balance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ telegramId: user?.id, balance: newBalance, energy: newEnergy })
+      });
+    } catch (err) {
+      console.error("Critical Sync Error:", err);
+    }
+  };
 
   useEffect(() => {
     // Initial Sync
@@ -793,12 +1066,12 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.2 }}
             >
-              {activeTab === 'home' && user && <HomeTab user={user} setUser={setUser} />}
-              {activeTab === 'developers' && user && <DevelopersTab user={user} setUser={setUser} />}
-              {activeTab === 'missions' && user && <MissionsTab user={user} referralCount={referralCount} />}
-              {activeTab === 'leaderboard' && <LeaderboardTab />}
+              {activeTab === 'home' && user && <HomeTab user={user} setUser={setUser} syncBalance={syncBalance} />}
+              {activeTab === 'developers' && user && <DevelopersTab user={user} setUser={setUser} syncBalance={syncBalance} />}
+              {activeTab === 'missions' && user && <MissionsTab user={user} referralCount={referralCount} setUser={setUser} />}
+              {activeTab === 'ranking' && user && <RankingTab user={user} />}
               {activeTab === 'wallet' && <WalletTab />}
-              {activeTab === 'profile' && user && <ProfilePage user={user} referralCount={referralCount} />}
+              {activeTab === 'profile' && user && <ProfilePage user={user} referralCount={referralCount} setUser={setUser} />}
             </motion.div>
           </AnimatePresence>
         </main>

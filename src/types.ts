@@ -30,7 +30,8 @@ export interface Mission {
   title: string;
   reward: number;
   points: number;
-  type: 'daily' | 'code' | 'social';
+  type: 'daily' | 'code' | 'social' | 'ads';
+  link?: string;
 }
 
 declare global {
