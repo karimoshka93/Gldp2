@@ -37,6 +37,10 @@ async function startServer() {
 
   // --- API Routes ---
 
+  // Health check for Render
+  app.get('/healthz', (req, res) => res.send('OK'));
+  app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
   // Middleware to validate Telegram WebApp initData 
   const validateTelegramData = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const initData = req.headers['x-telegram-init-data'] as string;
