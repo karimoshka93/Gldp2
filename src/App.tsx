@@ -129,27 +129,40 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
   }, [user.last_claim_at, user.active_multiplier]);
 
   const handleTap = (e: React.MouseEvent | React.TouchEvent) => {
+    if (user.energy <= 0) return;
+
     const x = 'touches' in e ? e.touches[0].clientX : e.clientX;
     const y = 'touches' in e ? e.touches[0].clientY : e.clientY;
     
-    if (user.energy <= 0) return;
+    // Calculate new values based on current state to avoid stale closure issues
+    const newBalance = (user.balance || 0) + 1;
+    const newEnergy = Math.max(0, user.energy - 1);
 
-    setTapValue(prev => prev + 1);
-    const newEnergy = user.energy - 1;
-    
     setFloatingTexts(prev => [...prev, { id: Date.now(), x, y }]);
     
-    setUser({ ...user, balance: tapValue + 1, energy: newEnergy });
+    // Update local state IMMEDIATELY
+    setTapValue(newBalance);
+    setUser({ ...user, balance: newBalance, energy: newEnergy });
 
     if (tapCooldownRef.current) clearTimeout(tapCooldownRef.current);
     tapCooldownRef.current = setTimeout(() => {
-      syncBalance(tapValue + 1, newEnergy);
+      syncBalance(newBalance, newEnergy);
     }, 1500);
 
     setTimeout(() => {
       setFloatingTexts(prev => prev.filter(t => t.id !== Date.now()));
     }, 800);
   };
+
+  // Client-side visual energy refill (1 per sec)
+  useEffect(() => {
+    const energyInterval = setInterval(() => {
+      if (user.energy < 1000) {
+        setUser(prev => prev ? { ...prev, energy: Math.min(1000, prev.energy + 1) } : null);
+      }
+    }, 1000);
+    return () => clearInterval(energyInterval);
+  }, [user.energy < 1000]);
 
   // Sync tapValue if user.balance changes externally (e.g. claim)
   useEffect(() => {
@@ -452,14 +465,9 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
     }
 
     if (m.type === 'social') {
-      // Open link
-      window.open(m.link, '_blank');
-      setClaiming(m.id);
-      
-      // Wait for user to "leave" and come back (approx simulation)
-      alert("Please check the post and come back to claim your reward!");
-      
-      setTimeout(async () => {
+      // 1. Check if we're in "Verification" mode
+      if (claiming === m.id) {
+        // User clicked again to verify
         try {
           const res = await fetch('/api/user/complete-quest', {
             method: 'POST',
@@ -475,13 +483,24 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
             })
           });
           const data = await res.json();
-          if (data.id) setUser(data);
+          if (data.id) {
+            setUser(data);
+            alert("Verification successful! Reward added.");
+          } else {
+            alert(data.error || "Please visit the link first.");
+          }
         } catch (err) {
           console.error(err);
         } finally {
           setClaiming(null);
         }
-      }, 5000); // 5 second delay to ensure they "left"
+        return;
+      }
+
+      // 2. Initial click: Open link and set claiming state
+      window.open(m.link, '_blank');
+      setClaiming(m.id);
+      alert("Opening task... Please return and click the task again to VERIFY and CLAIM your reward.");
       
     } else if (m.type === 'daily') {
       setClaiming(m.id);
@@ -512,17 +531,16 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
 
       // Adsgram logic
       // @ts-ignore
-      const adsgram = window.Adsgram || (window.parent && window.parent.Adsgram);
+      const adsgram = (window as any).Adsgram;
       if (adsgram) {
         // @ts-ignore
         const AdController = adsgram.init({ blockId: "28171" });
-        AdController.show().then(() => {
+        AdController.show().then(async () => {
           // Success
-          alert('Ad watched successfully! Your reward is being processed...');
-          // The backend reward URL will handle the balance update
-          // We trigger a sync here to refresh local state after a delay
-          setTimeout(async () => {
-            const res = await fetch('/api/user/sync', {
+          alert('Ad watched successfully! Processing reward...');
+          
+          try {
+            const res = await fetch('/api/user/ad-reward', {
               method: 'POST',
               headers: { 
                 'Content-Type': 'application/json',
@@ -531,14 +549,19 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
               body: JSON.stringify({ telegramId: user.id })
             });
             const data = await res.json();
-            if (data.id) setUser(data);
-          }, 3000);
+            if (data.id) {
+              setUser(data);
+              alert('Balance updated! +2,500 GLDp');
+            }
+          } catch (err) {
+            console.error("Reward error:", err);
+          }
         }).catch((err: any) => {
           console.error("Ad error:", err);
-          alert('Ad failed to load or was skipped.');
+          alert('Ad was skipped or failed to load. No reward given.');
         });
       } else {
-        alert('Adsgram SDK not loaded yet. If you are on desktop, please try on mobile Telegram.');
+        alert('Adsgram SDK is still loading or blocked. Please try again on Telegram Mobile and wait a few seconds.');
       }
     }
   };

@@ -18,7 +18,8 @@ create table profiles (
   created_at timestamptz default now(),
   code_task_states jsonb default '{}'::jsonb,
   daily_quest_states jsonb default '{}'::jsonb,
-  v1_synced boolean default false
+  v1_synced boolean default false,
+  updated_at timestamptz default now()
 );
 
 -- Enable RLS

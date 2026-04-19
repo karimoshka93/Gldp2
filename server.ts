@@ -161,24 +161,28 @@ async function startServer() {
         if (createError) throw createError;
         user = newUser;
       } else {
-        // Daily Energy Reset Check
-        const now = new Date();
-        const lastReset = user.last_energy_reset_at ? new Date(user.last_energy_reset_at) : new Date(0);
+        // Energy Refill Logic (1 per 1 second, max 1000)
+        const calculateEnergy = (currentEnergy: number, lastUpdate: string) => {
+          const last = new Date(lastUpdate);
+          const now = new Date();
+          const diffSecs = Math.floor((now.getTime() - last.getTime()) / 1000);
+          return Math.min(1000, currentEnergy + Math.max(0, diffSecs));
+        };
+
+        const newEnergy = calculateEnergy(user.energy, user.updated_at || user.created_at);
         
-        // Reset if it's a different calendar day
-        if (now.toDateString() !== lastReset.toDateString()) {
-           const { data: updatedUser, error: updateError } = await supabase
-            .from('profiles')
-            .update({
-              energy: 1000,
-              last_energy_reset_at: now.toISOString()
-            })
-            .eq('id', telegramId.toString())
-            .select()
-            .single();
+        // Update energy every time they sync
+        const { data: updatedUser, error: updateError } = await supabase
+          .from('profiles')
+          .update({ 
+            energy: newEnergy, 
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', telegramId.toString())
+          .select()
+          .single();
           
-          if (!updateError) user = updatedUser;
-        }
+        if (!updateError) user = updatedUser;
       }
 
       res.json(user);
@@ -237,7 +241,76 @@ async function startServer() {
     }
   });
 
-  // Manual Quest Complete (For social links)
+  // Ad Reward handler
+  app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
+    try {
+      const { telegramId } = req.body;
+      const now = new Date();
+      
+      const { data: user, error: fetchError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', telegramId.toString())
+        .single();
+      
+      if (fetchError) throw fetchError;
+
+      const questStates = user.daily_quest_states || {};
+      const adCount = questStates.ads_watched_today || 0;
+      const lastAd = questStates.last_ad_at ? new Date(questStates.last_ad_at) : new Date(0);
+      
+      // Cooldown check (1 hour)
+      const diffMs = now.getTime() - lastAd.getTime();
+      if (diffMs < 3600000 && adCount > 0) {
+        return res.status(400).json({ error: 'Ad is on cooldown' });
+      }
+
+      if (adCount >= 10) {
+        return res.status(400).json({ error: 'Daily limit reached' });
+      }
+
+      const { data: updatedUser, error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          balance: user.balance + 2500,
+          airdrop_rank: user.airdrop_rank + 15,
+          daily_quest_states: {
+            ...questStates,
+            ads_watched_today: adCount + 1,
+            last_ad_at: now.toISOString()
+          }
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+      res.json(updatedUser);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Admin / Adsgram Webhook (Optional but good for security)
+  app.get('/api/adsgram/reward', async (req, res) => {
+    try {
+      const { userid } = req.query;
+      if (!userid) return res.status(400).send('Missing userid');
+      
+      // We'll trust this for now as it's a dev build
+      // In production, you would verify the Adsgram signature
+      const { data: user } = await supabase.from('profiles').select('*').eq('id', userid.toString()).single();
+      if (user) {
+         await supabase.from('profiles').update({
+           balance: user.balance + 2500,
+           airdrop_rank: user.airdrop_rank + 15
+         }).eq('id', userid.toString());
+      }
+      res.send('ok');
+    } catch (e) {
+      res.status(500).send('error');
+    }
+  });
   app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, questId, reward, points } = req.body;
@@ -290,7 +363,7 @@ async function startServer() {
       const { telegramId, balance, energy } = req.body;
       const { data, error } = await supabase
         .from('profiles')
-        .update({ balance, energy })
+        .update({ balance, energy, updated_at: new Date().toISOString() })
         .eq('id', telegramId.toString())
         .select()
         .single();
