@@ -292,7 +292,7 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
             <span className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">Hourly Revenue</span>
           </div>
           <p className="text-xl font-black text-white">
-            +{(user.active_multiplier * 3600).toLocaleString()}<span className="text-[10px] text-green-400 ml-1">/h</span>
+            +{(user.multiplier * 3600).toLocaleString()}<span className="text-[10px] text-green-400 ml-1">/h</span>
           </p>
           <div className="text-[9px] text-neutral-500 mt-2 flex items-center justify-between">
             <span className="uppercase font-bold tracking-tighter">Current ROI</span>
@@ -684,7 +684,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
   );
 };
 
-const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, referralCount: number, setUser: (u: UserProfile) => void }) => {
+const ProfilePage = ({ user, referralCount, setUser, errorDetails }: { user: UserProfile, referralCount: number, setUser: (u: UserProfile) => void, errorDetails: string | null }) => {
   const shareLink = `https://t.me/GLDp_bot/app?startapp=${user.id}`;
   const telegramShare = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent('Join me on GLD Tap and earn tokens! 🚀')}`;
   const [isSyncing, setIsSyncing] = useState(false);
@@ -723,6 +723,17 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
         <Lock className="w-4 h-4" />
         SYNC V1 ACTIVITY (COMING SOON)
       </button>
+
+      {/* Sync Error Context (Only if sync failed) */}
+      {errorDetails && (
+        <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl">
+          <div className="flex items-center gap-2 text-red-400 mb-1">
+            <Shield className="w-4 h-4" />
+            <p className="text-[10px] font-black uppercase tracking-widest">Database Status: Sync Warning</p>
+          </div>
+          <p className="text-xs text-[#94a3b8] leading-relaxed">{errorDetails}</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div className="glass-card p-4 flex flex-col items-center text-center border-white/5 bg-[#1e293b]/30">
@@ -1047,20 +1058,54 @@ export default function App() {
         
         const data = await res.json();
         
-        if (!data) throw new Error("Synchronization returned empty data. Please refresh.");
-        if (data.id) {
+        if (!data || data.error) {
+          console.warn("Sync warning:", data?.error || "Empty data");
+          // Fallback user to prevent app block
+          const fallbackUser: UserProfile = {
+            id: telegramId,
+            username: username || 'Guest',
+            first_name: first_name || 'Guest',
+            photo_url: photo_url || null,
+            airdropRank: 0,
+            balance: 0,
+            multiplier: 0.1,
+            energy: 1000,
+            v1_synced: false,
+            last_claim_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            daily_quest_states: {}
+          };
+          setUser(fallbackUser);
+          if (data?.error) {
+            setErrorDetails(data.message || data.error);
+          }
+        } else if (data.id) {
           setUser(data);
         } else if (data.user) {
           setUser(data.user);
           setReferralCount(data.referralCount || 0);
-        } else if (data.error) {
-          throw new Error(data.message || data.error);
         } else {
           setUser(data);
         }
       } catch (err: any) {
-        console.error('Sync Error:', err.message);
-        setErrorDetails(err.message);
+        console.error('Sync Fatal Error:', err.message);
+        // Ensure user can still see the app if possible
+        const localUser: UserProfile = {
+          id: telegramId,
+          username: username || 'Guest',
+          first_name: first_name || 'Guest',
+          photo_url: photo_url || null,
+          airdropRank: 0,
+          balance: 0,
+          multiplier: 0.1,
+          energy: 1000,
+          v1_synced: false,
+          last_claim_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          daily_quest_states: {}
+        };
+        setUser(localUser);
+        setErrorDetails("Connection was interrupted, using local profile.");
       } finally {
         setLoading(false);
       }
@@ -1075,26 +1120,6 @@ export default function App() {
         <div className="text-center space-y-4">
           <div className="w-16 h-16 border-4 border-[#facc15] border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="text-xs uppercase font-black tracking-[0.3em] font-mono gold-gradient">Sychronizing GLD Network...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-[#0f172a] px-10 text-center">
-        <div className="space-y-6 max-w-sm">
-          <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mx-auto border border-red-500/20">
-             <Target className="w-10 h-10 text-red-500" />
-          </div>
-          <h2 className="text-2xl font-black">Sync Required</h2>
-          <p className="text-sm text-[#94a3b8]">{errorDetails || "We couldn't synchronize your profile. Please check your Supabase configuration."}</p>
-          <button 
-            onClick={() => window.location.reload()}
-            className="w-full py-4 bg-white text-black font-black rounded-xl active:scale-95 transition-all"
-          >
-            RETRY SYNC
-          </button>
         </div>
       </div>
     );
@@ -1119,7 +1144,7 @@ export default function App() {
               {activeTab === 'missions' && user && <MissionsTab user={user} referralCount={referralCount} setUser={setUser} />}
               {activeTab === 'ranking' && user && <RankingTab user={user} />}
               {activeTab === 'wallet' && <WalletTab />}
-              {activeTab === 'profile' && user && <ProfilePage user={user} referralCount={referralCount} setUser={setUser} />}
+              {activeTab === 'profile' && user && <ProfilePage user={user} referralCount={referralCount} setUser={setUser} errorDetails={errorDetails} />}
             </motion.div>
           </AnimatePresence>
         </main>

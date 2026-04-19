@@ -8,8 +8,8 @@ create table profiles (
   username text,
   first_name text,
   balance float8 default 0,
-  active_multiplier float8 default 0.1,
-  airdrop_rank int8 default 0,
+  multiplier float8 default 0.1, -- Correct column name
+  airdropRank int8 default 0,     -- Correct column name
   energy int8 default 1000,
   game_tickets int8 default 5,
   extra_combat_matches int8 default 0,
