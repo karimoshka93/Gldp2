@@ -78,119 +78,64 @@ async function startServer() {
         throw error;
       }
 
-      // 2. If not in Supabase, try migrating from Firestore
+      // 2. If not in Supabase, try migrating from Firestore (Fresh Start)
       if (!user && firestore) {
-        console.log(`User ${telegramId} (${username}) not found in Supabase. Checking Firestore...`);
+        console.log(`NEW USER: ${telegramId} (${username}). Checking V1 Activity Points...`);
         
         let firestoreUser: any = null;
-        let firestoreDocId: string | null = null;
         
-        // --- MULTI-SEARCH STRATEGY ---
-        
+        // --- MULTI-SEARCH FOR V1 IMPORT ---
         // Search 1: By Telegram ID (numeric doc ID)
         const docById = await firestore.collection('users').doc(telegramId.toString()).get();
-        if (docById.exists) {
-          firestoreUser = docById.data();
-          firestoreDocId = docById.id;
-        }
+        if (docById.exists) firestoreUser = docById.data();
 
-        // Search 2: By Telegram ID field
+        // Search 2: ID field string
         if (!firestoreUser) {
-          const qById = await firestore.collection('users').where('telegram_id', '==', telegramId.toString()).limit(1).get();
-          if (!qById.empty) {
-            firestoreUser = qById.docs[0].data();
-            firestoreDocId = qById.docs[0].id;
-          }
+          const qByTid = await firestore.collection('users').where('telegram_id', '==', telegramId.toString()).limit(1).get();
+          if (!qByTid.empty) firestoreUser = qByTid.docs[0].data();
         }
 
-        // Search 3: By Username field (Master's request)
+        // Search 3: Username
         if (!firestoreUser && username) {
           const qByUsername = await firestore.collection('users').where('username', '==', username).limit(1).get();
-          if (!qByUsername.empty) {
-            firestoreUser = qByUsername.docs[0].data();
-            firestoreDocId = qByUsername.docs[0].id;
-          }
+          if (!qByUsername.empty) firestoreUser = qByUsername.docs[0].data();
         }
 
-        // Search 4: By ownerId field (Master's image verification)
+        // Search 4: ownerId
         if (!firestoreUser) {
-          // We can't query the entire DB for an unknown ownerId efficiently, 
-          // but we can check if there's a document with a field that matches the ID
           const qByOwnerId = await firestore.collection('users').where('ownerId', '==', telegramId.toString()).limit(1).get();
-          if (!qByOwnerId.empty) {
-            firestoreUser = qByOwnerId.docs[0].data();
-            firestoreDocId = qByOwnerId.docs[0].id;
-          }
+          if (!qByOwnerId.empty) firestoreUser = qByOwnerId.docs[0].data();
         }
 
-        if (firestoreUser) {
-          console.log(`Found V1 data for ${telegramId} in Firestore (Doc: ${firestoreDocId}). Migrating...`);
-          
-          // Map Firebase Balance & Rank correctly
-          // We prioritize 'points' or 'airdropRank' if they exist
-          const v1Balance = firestoreUser.balance || firestoreUser.points || 0;
-          const v1Rank = firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.rank || 0;
+        // The Activity Points Foundation (Master's request: IMPORT ONLY THIS)
+        const v1Points = firestoreUser ? (firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.points || firestoreUser.rank || 0) : 0;
 
-          const migratedData = {
-            id: telegramId.toString(),
-            username: firestoreUser.username || username,
-            first_name: firestoreUser.first_name || first_name,
-            balance: v1Balance,
-            active_multiplier: firestoreUser.active_multiplier || firestoreUser.multiplier || 0.1,
-            airdrop_rank: v1Rank,
-            energy: firestoreUser.energy || 1000,
-            game_tickets: firestoreUser.game_tickets || 5,
-            extra_combat_matches: firestoreUser.extra_combat_matches || 0,
-            combat_matches_today: 0,
-            last_claim_at: firestoreUser.last_claim_at || new Date().toISOString(),
-            code_task_states: firestoreUser.code_task_states || {},
-            daily_quest_states: firestoreUser.daily_quest_states || {},
-            v1_synced: true,
-            updated_at: new Date().toISOString()
-          };
-
-          const { data: newUser, error: createError } = await supabase
-            .from('profiles')
-            .upsert([migratedData]) // Use upsert to avoid duplicate errors
-            .select()
-            .single();
-
-          if (createError) throw createError;
-          user = newUser;
-          console.log(`V1 Migration success for ${username}`);
-        }
-      }
-
-      // 3. If still no user, create a fresh one
-      if (!user) {
         const { data: newUser, error: createError } = await supabase
           .from('profiles')
-          .insert([
-            {
-              id: telegramId.toString(),
-              username,
-              first_name,
-              balance: 0,
-              active_multiplier: 0.1,
-              airdrop_rank: 0,
-              energy: 1000,
-              game_tickets: 5,
-              extra_combat_matches: 0,
-              combat_matches_today: 0,
-              last_claim_at: new Date().toISOString(),
-              last_energy_reset_at: new Date().toISOString(),
-              code_task_states: {},
-              daily_quest_states: {}
-            }
-          ])
+          .insert([{
+            id: telegramId.toString(),
+            username: username || (firestoreUser?.username),
+            first_name: first_name || (firestoreUser?.first_name),
+            photo_url: req.body.photo_url || (firestoreUser?.photo_url) || null,
+            airdropRank: v1Points,
+            balance: 0,
+            multiplier: 0.1,
+            energy: 1000,
+            referred_by: req.body.referred_by || null,
+            v1_synced: true,
+            updated_at: new Date().toISOString()
+          }])
           .select()
           .single();
 
         if (createError) throw createError;
         user = newUser;
-      } else {
+        console.log(`SUCCESS: Created profile & imported ${v1Points} points for ${username}`);
+      }
+
+      // 3. Handle Energy & Persistence for Existing Users
+      if (user) {
         // Energy Refill Logic (1 per 1 second, max 1000)
-        // We use updated_at since it's confirmed in the schema
         const calculateEnergy = (currentEnergy: number, lastUpdate: string) => {
           const last = new Date(lastUpdate || 0);
           const now = new Date();
@@ -198,9 +143,8 @@ async function startServer() {
           return Math.min(1000, currentEnergy + Math.max(0, diffSecs));
         };
 
-        const newEnergy = calculateEnergy(user.energy, user.updated_at || user.created_at);
+        const newEnergy = calculateEnergy(user.energy, user.updated_at);
         
-        // Update energy every time they sync
         const { data: updatedUser, error: updateError } = await supabase
           .from('profiles')
           .update({ 
@@ -212,6 +156,23 @@ async function startServer() {
           .single();
           
         if (!updateError) user = updatedUser;
+      } else {
+        // Fallback for failed migration or no Firestore
+        const { data: freshUser, error: createError } = await supabase
+          .from('profiles')
+          .insert([{
+            id: telegramId.toString(),
+            username,
+            first_name,
+            airdropRank: 0,
+            balance: 0,
+            multiplier: 0.1,
+            energy: 1000,
+            v1_synced: false
+          }])
+          .select()
+          .single();
+        if (!createError) user = freshUser;
       }
 
       res.json(user);
@@ -222,6 +183,7 @@ async function startServer() {
   });
 
   // Adsgram Reward Endpoint (GET as per Adsgram tooltip)
+  // Adsgram Reward handler (Legacy check - cleanup)
   app.get('/api/adsgram/reward', async (req, res) => {
     try {
       const { userid } = req.query;
@@ -235,7 +197,6 @@ async function startServer() {
 
       if (fetchError || !user) return res.status(404).send('User not found');
 
-      // Check ad count/cooldown
       const questStates = user.daily_quest_states || {};
       const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
       
@@ -245,12 +206,11 @@ async function startServer() {
       const oneHour = 60 * 60 * 1000;
       if (now - adState.last_ad_at < oneHour) return res.status(400).send('On cooldown');
 
-      // Update user
       const { error: updateError } = await supabase
         .from('profiles')
         .update({
-          balance: user.balance + 2500,
-          airdrop_rank: user.airdrop_rank + 15,
+          balance: (user.balance || 0) + 2500,
+          airdropRank: (user.airdropRank || 0) + 15,
           daily_quest_states: {
             ...questStates,
             adsgram: {
@@ -262,10 +222,8 @@ async function startServer() {
         .eq('id', userid.toString());
 
       if (updateError) throw updateError;
-      
       res.send('Reward granted');
     } catch (err: any) {
-      console.error('Adsgram Reward Error:', err);
       res.status(500).send('Internal error');
     }
   });
@@ -302,7 +260,7 @@ async function startServer() {
         .from('profiles')
         .update({
           balance: user.balance + 2500,
-          airdrop_rank: user.airdrop_rank + 15,
+          airdropRank: user.airdropRank + 15,
           daily_quest_states: {
             ...questStates,
             ads_watched_today: adCount + 1,
@@ -332,7 +290,7 @@ async function startServer() {
       if (user) {
          await supabase.from('profiles').update({
            balance: user.balance + 2500,
-           airdrop_rank: user.airdrop_rank + 15
+           airdropRank: user.airdropRank + 15
          }).eq('id', userid.toString());
       }
       res.send('ok');
@@ -369,7 +327,7 @@ async function startServer() {
         .from('profiles')
         .update({
           balance: user.balance + reward,
-          airdrop_rank: user.airdrop_rank + points,
+          airdropRank: user.airdropRank + points,
           daily_quest_states: {
             ...questStates,
             [questId]: now.toISOString()
@@ -418,13 +376,13 @@ async function startServer() {
       if (fetchError) throw fetchError;
 
       const now = new Date();
-      const lastClaim = new Date(user.last_claim_at);
+      const lastClaim = new Date(user.last_claim_at || user.created_at);
       const diffMs = now.getTime() - lastClaim.getTime();
       const diffSecs = diffMs / 1000;
       
       // Calculate earnings based on per-second rate
       // Allow claiming at any time if earned > 0
-      const earnings = Math.floor(diffSecs * user.active_multiplier);
+      const earnings = Math.floor(diffSecs * user.multiplier);
       
       if (earnings <= 0) return res.status(400).json({ error: 'Nothing to claim yet' });
 
@@ -473,7 +431,7 @@ async function startServer() {
         .from('profiles')
         .update({
           balance: newBalance,
-          active_multiplier: user.active_multiplier + boost
+          multiplier: user.multiplier + boost
         })
         .eq('id', telegramId.toString())
         .select()
@@ -490,13 +448,13 @@ async function startServer() {
   // Leaderboard
   app.get('/api/leaderboard', async (req, res) => {
     try {
-      const { sortBy = 'airdrop_rank' } = req.query;
-      const validSorts = ['airdrop_rank', 'active_multiplier'];
-      const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdrop_rank';
+      const { sortBy = 'airdropRank' } = req.query;
+      const validSorts = ['airdropRank', 'multiplier'];
+      const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdropRank';
 
       const { data, error } = await supabase
         .from('profiles')
-        .select('id, username, first_name, airdrop_rank, active_multiplier, photo_url')
+        .select('id, username, first_name, airdropRank, multiplier, photo_url')
         .order(sortColumn, { ascending: false })
         .limit(200);
 
@@ -508,102 +466,47 @@ async function startServer() {
   });
 
   // Dedicated Firebase Points Sync
-  // SYNC ACTIVITY POINTS FROM V1 (FIRESTORE)
   app.post('/api/user/sync-firebase-points', validateTelegramData, async (req, res) => {
     try {
       const { telegramId } = req.body;
-      if (!firestore) {
-        console.error('Migration Error: FIREBASE_SERVICE_ACCOUNT not configured');
-        return res.status(400).json({ error: 'Migration bridge not configured. Please contact support.' });
-      }
+      if (!firestore) return res.status(400).json({ error: 'Firestore not configured' });
 
-      // Check if already synced in Supabase
       const { data: currentUser, error: checkError } = await supabase
         .from('profiles')
-        .select('airdrop_rank, v1_synced')
+        .select('airdropRank, v1_synced')
         .eq('id', telegramId.toString())
         .single();
       
       if (checkError) throw checkError;
-      if (currentUser.v1_synced) {
-        return res.status(400).json({ error: 'You have already synchronized your V1 data.' });
-      }
+      if (currentUser.v1_synced) return res.status(400).json({ error: 'Already synced.' });
 
-      console.log(`Manual sync requested for user ${telegramId}`);
-
-      // Try multiple collections: users, profiles, players, stats
       const collections = ['users', 'profiles', 'players', 'stats'];
       let firestoreUser: any = null;
 
       for (const col of collections) {
-        // Try by ID directly
         const docSnap = await firestore.collection(col).doc(telegramId.toString()).get();
-        if (docSnap.exists) {
-          firestoreUser = docSnap.data();
-          console.log(`Found user in collection [${col}] by doc ID`);
-          break;
-        }
-        // Try by telegram_id field
-        const querySnap = await firestore.collection(col).where('telegram_id', '==', telegramId.toString()).limit(1).get();
-        if (!querySnap.empty) {
-          firestoreUser = querySnap.docs[0].data();
-          console.log(`Found user in collection [${col}] by telegram_id field`);
-          break;
-        }
-        // Try by id field
-        const querySnapId = await firestore.collection(col).where('id', '==', telegramId.toString()).limit(1).get();
-        if (!querySnapId.empty) {
-          firestoreUser = querySnapId.docs[0].data();
-          console.log(`Found user in collection [${col}] by id field (string)`);
-          break;
-        }
-        try {
-          const querySnapIdNum = await firestore.collection(col).where('id', '==', parseInt(telegramId)).limit(1).get();
-          if (!querySnapIdNum.empty) {
-            firestoreUser = querySnapIdNum.docs[0].data();
-            console.log(`Found user in collection [${col}] by id field (number)`);
-            break;
-          }
-        } catch(e) {}
+        if (docSnap.exists) { firestoreUser = docSnap.data(); break; }
+        const querySnapNum = await firestore.collection(col).where('id', '==', parseInt(telegramId)).limit(1).get();
+        if (!querySnapNum.empty) { firestoreUser = querySnapNum.docs[0].data(); break; }
+        const queryByTid = await firestore.collection(col).where('telegram_id', '==', telegramId.toString()).limit(1).get();
+        if (!queryByTid.empty) { firestoreUser = queryByTid.docs[0].data(); break; }
       }
 
-      if (!firestoreUser) {
-        console.warn(`No V1 data found for ${telegramId} after searching collections: ${collections.join(', ')}`);
-        return res.status(404).json({ error: 'No old data found for this account in V1 records.' });
-      }
+      if (!firestoreUser) return res.status(404).json({ error: 'No data found.' });
 
-      // Try common point field names (including airdropRank from screenshot)
-      const pointFields = ['airdropRank', 'airdrop_rank', 'rank', 'points', 'total_points', 'status_points', 'activity_points'];
-      let oldPoints = 0;
-      for (const field of pointFields) {
-        if (firestoreUser[field] !== undefined) {
-          oldPoints = parseInt(firestoreUser[field]) || 0;
-          console.log(`Retrieved ${oldPoints} points from field [${field}]`);
-          break;
-        }
-      }
+      const v1Points = firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.points || firestoreUser.rank || 0;
+      const totalPoints = (currentUser.airdropRank || 0) + v1Points;
 
-      // ADDITIVE SYNC: Add old points to the current application points
-      const totalPoints = (currentUser.airdrop_rank || 0) + oldPoints;
-
-      // Update Supabase and mark as synced PERMANENTLY
       const { data: updatedUser, error: updateError } = await supabase
         .from('profiles')
-        .update({ 
-          airdrop_rank: totalPoints,
-          v1_synced: true 
-        })
+        .update({ airdropRank: totalPoints, v1_synced: true })
         .eq('id', telegramId.toString())
-        .select()
         .single();
 
       if (updateError) throw updateError;
-      
-      console.log(`Successfully synced ${oldPoints} points. Total now: ${totalPoints} for user ${telegramId}`);
       res.json(updatedUser);
     } catch (err: any) {
-      console.error('Firebase Sync Error:', err.message);
-      res.status(500).json({ error: 'Internal system error during synchronization. Please try again later.' });
+      res.status(500).json({ error: err.message });
     }
   });
 

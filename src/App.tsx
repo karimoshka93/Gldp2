@@ -100,7 +100,7 @@ const Header = ({ user, setActiveTab }: { user: UserProfile | null, setActiveTab
     </div>
     <div className="flex items-center gap-2 px-3 py-1.5 glass-card border-yellow-500/30">
       <Trophy className="w-3.5 h-3.5 text-yellow-500" />
-      <span className="text-xs font-mono font-black text-yellow-500">Rank #{user?.airdrop_rank || 0}</span>
+      <span className="text-xs font-mono font-black text-yellow-500">Rank #{user?.airdropRank || 0}</span>
     </div>
   </header>
 );
@@ -119,14 +119,14 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
       const lastClaim = new Date(user.last_claim_at);
       const diffSecs = (now.getTime() - lastClaim.getTime()) / 1000;
       
-      const earned = Math.floor(diffSecs * user.active_multiplier);
+      const earned = Math.floor(diffSecs * user.multiplier);
       setAccumulated(earned);
       
       const remaining = Math.max(0, 14400 - (diffSecs % 14400));
       setTimeLeft(remaining);
     }, 1000);
     return () => clearInterval(interval);
-  }, [user.last_claim_at, user.active_multiplier]);
+  }, [user.last_claim_at, user.multiplier]);
 
   const handleTap = (e: React.MouseEvent | React.TouchEvent) => {
     if (user.energy <= 0) return;
@@ -762,7 +762,7 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
         <div className="glass-card p-4 flex flex-col items-center text-center border-white/5 bg-[#1e293b]/30">
           <Zap className="w-5 h-5 text-indigo-400 mb-2" />
           <p className="text-[9px] uppercase font-bold text-neutral-500 tracking-widest">Hourly Profit</p>
-          <p className="text-xl font-black text-white mt-1">+{Math.floor(user.active_multiplier * 3600)}</p>
+          <p className="text-xl font-black text-white mt-1">+{Math.floor(user.multiplier * 3600)}</p>
         </div>
         <div className="glass-card p-4 flex flex-col items-center text-center border-white/5 bg-[#1e293b]/30">
           <Target className="w-5 h-5 text-emerald-400 mb-2" />
@@ -801,6 +801,19 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
           >
             COPY
           </button>
+          <div className="glass-card p-6 mt-6">
+            <h3 className="text-[10px] uppercase font-black text-[#94a3b8] tracking-[0.2em] mb-4">Internal System Stats</h3>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center pb-4 border-b border-white/5">
+                <span className="text-xs text-[#94a3b8]">Build Version</span>
+                <span className="text-xs font-mono text-blue-400">2026.04.19.1305</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-xs text-[#94a3b8]">Last Server Sync</span>
+                <span className="text-xs font-mono text-green-400">{new Date(user.updated_at).toLocaleTimeString()}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -809,7 +822,7 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
 const RankingTab = ({ user }: { user: UserProfile }) => {
   const [leaders, setLeaders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [sortBy, setSortBy] = useState('airdrop_rank');
+  const [sortBy, setSortBy] = useState('airdropRank');
 
   useEffect(() => {
     setLoading(true);
@@ -829,8 +842,8 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
   const rest = leaders.slice(3, 100);
 
   const getMetric = (l: any) => {
-    if (sortBy === 'active_multiplier') return `+${Math.floor(l.active_multiplier * 3600)}/h`;
-    return l.airdrop_rank.toLocaleString();
+    if (sortBy === 'multiplier') return `+${Math.floor(l.multiplier * 3600)}/h`;
+    return l.airdropRank.toLocaleString();
   };
 
   return (

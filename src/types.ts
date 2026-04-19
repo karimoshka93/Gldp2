@@ -1,20 +1,20 @@
 export interface UserProfile {
-  id: string; // telegram_id
+  id: string; 
   username?: string;
   first_name?: string;
-  balance: number; // GLDp
-  active_multiplier: number; // Passive income per second
-  airdrop_rank: number; // Activity Points
-  energy: number;
-  game_tickets: number;
-  extra_combat_matches: number;
-  combat_matches_today: number;
-  last_claim_at: string;
   photo_url?: string | null;
-  created_at: string;
-  code_task_states: Record<string, any>;
+  airdropRank: number; // Activity PointsFoundation
+  balance: number; 
+  multiplier: number; // Passive income per second
+  energy: number;
+  referred_by?: string;
+  last_claim_at: string;
+  last_energy_reset_at?: string;
   daily_quest_states: Record<string, any>;
+  code_task_states: Record<string, any>;
   v1_synced?: boolean;
+  updated_at: string;
+  created_at: string;
 }
 
 export interface DeveloperCard {
