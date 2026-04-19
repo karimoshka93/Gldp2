@@ -134,22 +134,31 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
     
     if (user.energy <= 0) return;
 
-    const newBalance = tapValue + 1;
+    setTapValue(prev => prev + 1);
     const newEnergy = user.energy - 1;
-    setTapValue(newBalance);
+    
     setFloatingTexts(prev => [...prev, { id: Date.now(), x, y }]);
     
-    setUser({ ...user, balance: newBalance, energy: newEnergy });
+    setUser({ ...user, balance: tapValue + 1, energy: newEnergy });
 
     if (tapCooldownRef.current) clearTimeout(tapCooldownRef.current);
     tapCooldownRef.current = setTimeout(() => {
-      syncBalance(newBalance, newEnergy);
-    }, 1000);
+      syncBalance(tapValue + 1, newEnergy);
+    }, 1500);
 
     setTimeout(() => {
       setFloatingTexts(prev => prev.filter(t => t.id !== Date.now()));
     }, 800);
   };
+
+  // Sync tapValue if user.balance changes externally (e.g. claim)
+  useEffect(() => {
+    // Only update if the difference is significant (passive income vs tapping)
+    // or if we are not actively tapping (cooldown is null)
+    if (!tapCooldownRef.current) {
+        setTapValue(user.balance);
+    }
+  }, [user.balance]);
 
   const handleClaim = async () => {
     try {
@@ -157,7 +166,10 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
       
       const res = await fetch('/api/user/claim', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+        },
         body: JSON.stringify({ telegramId: user.id })
       });
       const data = await res.json();
@@ -330,7 +342,10 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
       
       const res = await fetch('/api/user/upgrade', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+        },
         body: JSON.stringify({ 
           telegramId: user.id, 
           developerId: dev.id,
@@ -448,7 +463,10 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
         try {
           const res = await fetch('/api/user/complete-quest', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+              'Content-Type': 'application/json',
+              'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+            },
             body: JSON.stringify({
               telegramId: user.id,
               questId: m.id,
@@ -470,7 +488,10 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       try {
         const res = await fetch('/api/user/complete-quest', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+          },
           body: JSON.stringify({
             telegramId: user.id,
             questId: m.id,
@@ -491,9 +512,10 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
 
       // Adsgram logic
       // @ts-ignore
-      if (window.Adsgram) {
+      const adsgram = window.Adsgram || (window.parent && window.parent.Adsgram);
+      if (adsgram) {
         // @ts-ignore
-        const AdController = window.Adsgram.init({ blockId: "28171" });
+        const AdController = adsgram.init({ blockId: "28171" });
         AdController.show().then(() => {
           // Success
           alert('Ad watched successfully! Your reward is being processed...');
@@ -502,7 +524,10 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
           setTimeout(async () => {
             const res = await fetch('/api/user/sync', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 
+                'Content-Type': 'application/json',
+                'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+              },
               body: JSON.stringify({ telegramId: user.id })
             });
             const data = await res.json();
@@ -513,7 +538,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
           alert('Ad failed to load or was skipped.');
         });
       } else {
-        alert('Adsgram SDK not loaded yet.');
+        alert('Adsgram SDK not loaded yet. If you are on desktop, please try on mobile Telegram.');
       }
     }
   };
@@ -645,7 +670,10 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
       setIsSyncing(true);
       const res = await fetch('/api/user/sync-firebase-points', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+        },
         body: JSON.stringify({ telegramId: user.id })
       });
       const data = await res.json();
@@ -686,14 +714,16 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
       </div>
 
       {/* Sync Button */}
-      <button 
-        onClick={syncOldPoints}
-        disabled={isSyncing}
-        className="w-full py-4 glass-card border-yellow-500/30 bg-yellow-500/5 text-yellow-500 font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
-      >
-        <RefreshCcw className={cn("w-4 h-4", isSyncing && "animate-spin")} />
-        {isSyncing ? "SYNCING..." : "SYNC ACTIVITY POINTS FROM V1"}
-      </button>
+      {!user.v1_synced && (
+        <button 
+          onClick={syncOldPoints}
+          disabled={isSyncing}
+          className="w-full py-4 glass-card border-yellow-500/30 bg-yellow-500/5 text-yellow-500 font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
+        >
+          <RefreshCcw className={cn("w-4 h-4", isSyncing && "animate-spin")} />
+          {isSyncing ? "SYNCING..." : "SYNC ACTIVITY POINTS FROM V1"}
+        </button>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div className="glass-card p-4 flex flex-col items-center text-center border-white/5 bg-[#1e293b]/30">
@@ -962,7 +992,10 @@ export default function App() {
     try {
       await fetch('/api/user/sync-balance', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+        },
         body: JSON.stringify({ telegramId: user?.id, balance: newBalance, energy: newEnergy })
       });
     } catch (err) {

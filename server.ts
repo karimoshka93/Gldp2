@@ -110,14 +110,15 @@ async function startServer() {
             first_name: firestoreUser.first_name || first_name,
             balance: firestoreUser.balance || 0,
             active_multiplier: firestoreUser.active_multiplier || firestoreUser.multiplier || 0.1,
-            airdrop_rank: firestoreUser.airdrop_rank || firestoreUser.rank || 0,
+            airdrop_rank: firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.rank || 0,
             energy: firestoreUser.energy || 1000,
             game_tickets: firestoreUser.game_tickets || 5,
             extra_combat_matches: firestoreUser.extra_combat_matches || 0,
             combat_matches_today: 0,
             last_claim_at: firestoreUser.last_claim_at || new Date().toISOString(),
             code_task_states: firestoreUser.code_task_states || {},
-            daily_quest_states: firestoreUser.daily_quest_states || {}
+            daily_quest_states: firestoreUser.daily_quest_states || {},
+            v1_synced: true
           };
 
           const { data: newUser, error: createError } = await supabase
@@ -405,39 +406,102 @@ async function startServer() {
   });
 
   // Dedicated Firebase Points Sync
+  // SYNC ACTIVITY POINTS FROM V1 (FIRESTORE)
   app.post('/api/user/sync-firebase-points', validateTelegramData, async (req, res) => {
     try {
       const { telegramId } = req.body;
-      if (!firestore) return res.status(400).json({ error: 'Migration bridge not configured' });
-
-      // Look up in Firestore
-      const docRef = firestore.collection('users').doc(telegramId.toString());
-      const docSnap = await docRef.get();
-      let firestoreUser: any = null;
-
-      if (docSnap.exists) {
-        firestoreUser = docSnap.data();
-      } else {
-        const querySnap = await firestore.collection('users').where('telegram_id', '==', telegramId.toString()).limit(1).get();
-        if (!querySnap.empty) firestoreUser = querySnap.docs[0].data();
+      if (!firestore) {
+        console.error('Migration Error: FIREBASE_SERVICE_ACCOUNT not configured');
+        return res.status(400).json({ error: 'Migration bridge not configured. Please contact support.' });
       }
 
-      if (!firestoreUser) return res.status(404).json({ error: 'No old data found for this user' });
+      // Check if already synced in Supabase
+      const { data: currentUser, error: checkError } = await supabase
+        .from('profiles')
+        .select('airdrop_rank, v1_synced')
+        .eq('id', telegramId.toString())
+        .single();
+      
+      if (checkError) throw checkError;
+      if (currentUser.v1_synced) {
+        return res.status(400).json({ error: 'You have already synchronized your V1 data.' });
+      }
 
-      const oldPoints = firestoreUser.airdrop_rank || firestoreUser.rank || 0;
+      console.log(`Manual sync requested for user ${telegramId}`);
 
-      // Update Supabase
+      // Try multiple collections: users, profiles, players, stats
+      const collections = ['users', 'profiles', 'players', 'stats'];
+      let firestoreUser: any = null;
+
+      for (const col of collections) {
+        // Try by ID directly
+        const docSnap = await firestore.collection(col).doc(telegramId.toString()).get();
+        if (docSnap.exists) {
+          firestoreUser = docSnap.data();
+          console.log(`Found user in collection [${col}] by doc ID`);
+          break;
+        }
+        // Try by telegram_id field
+        const querySnap = await firestore.collection(col).where('telegram_id', '==', telegramId.toString()).limit(1).get();
+        if (!querySnap.empty) {
+          firestoreUser = querySnap.docs[0].data();
+          console.log(`Found user in collection [${col}] by telegram_id field`);
+          break;
+        }
+        // Try by id field
+        const querySnapId = await firestore.collection(col).where('id', '==', telegramId.toString()).limit(1).get();
+        if (!querySnapId.empty) {
+          firestoreUser = querySnapId.docs[0].data();
+          console.log(`Found user in collection [${col}] by id field (string)`);
+          break;
+        }
+        try {
+          const querySnapIdNum = await firestore.collection(col).where('id', '==', parseInt(telegramId)).limit(1).get();
+          if (!querySnapIdNum.empty) {
+            firestoreUser = querySnapIdNum.docs[0].data();
+            console.log(`Found user in collection [${col}] by id field (number)`);
+            break;
+          }
+        } catch(e) {}
+      }
+
+      if (!firestoreUser) {
+        console.warn(`No V1 data found for ${telegramId} after searching collections: ${collections.join(', ')}`);
+        return res.status(404).json({ error: 'No old data found for this account in V1 records.' });
+      }
+
+      // Try common point field names (including airdropRank from screenshot)
+      const pointFields = ['airdropRank', 'airdrop_rank', 'rank', 'points', 'total_points', 'status_points', 'activity_points'];
+      let oldPoints = 0;
+      for (const field of pointFields) {
+        if (firestoreUser[field] !== undefined) {
+          oldPoints = parseInt(firestoreUser[field]) || 0;
+          console.log(`Retrieved ${oldPoints} points from field [${field}]`);
+          break;
+        }
+      }
+
+      // ADDITIVE SYNC: Add old points to the current application points
+      const totalPoints = (currentUser.airdrop_rank || 0) + oldPoints;
+
+      // Update Supabase and mark as synced PERMANENTLY
       const { data: updatedUser, error: updateError } = await supabase
         .from('profiles')
-        .update({ airdrop_rank: oldPoints })
+        .update({ 
+          airdrop_rank: totalPoints,
+          v1_synced: true 
+        })
         .eq('id', telegramId.toString())
         .select()
         .single();
 
       if (updateError) throw updateError;
+      
+      console.log(`Successfully synced ${oldPoints} points. Total now: ${totalPoints} for user ${telegramId}`);
       res.json(updatedUser);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error('Firebase Sync Error:', err.message);
+      res.status(500).json({ error: 'Internal system error during synchronization. Please try again later.' });
     }
   });
 

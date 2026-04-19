@@ -17,7 +17,8 @@ create table profiles (
   last_claim_at timestamptz default now(),
   created_at timestamptz default now(),
   code_task_states jsonb default '{}'::jsonb,
-  daily_quest_states jsonb default '{}'::jsonb
+  daily_quest_states jsonb default '{}'::jsonb,
+  v1_synced boolean default false
 );
 
 -- Enable RLS

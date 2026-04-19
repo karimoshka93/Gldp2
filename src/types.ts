@@ -14,6 +14,7 @@ export interface UserProfile {
   created_at: string;
   code_task_states: Record<string, any>;
   daily_quest_states: Record<string, any>;
+  v1_synced?: boolean;
 }
 
 export interface DeveloperCard {
