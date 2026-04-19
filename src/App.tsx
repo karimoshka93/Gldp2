@@ -28,7 +28,8 @@ import {
   HardDrive,
   Send,
   Crown,
-  RefreshCcw
+  RefreshCcw,
+  Lock
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { 
@@ -689,31 +690,7 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
   const [isSyncing, setIsSyncing] = useState(false);
 
   const syncOldPoints = async () => {
-    try {
-      setIsSyncing(true);
-      const res = await fetch('/api/user/sync-firebase-points', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
-        },
-        body: JSON.stringify({ telegramId: user.id })
-      });
-      const data = await res.json();
-      if (data && data.id) {
-        setUser(data);
-        alert('Old activity points successfully synchronized!');
-      } else if (data && data.error) {
-        alert(data.message || data.error);
-      } else {
-        alert('No old data found for this account.');
-      }
-    } catch (err) {
-      console.error(err);
-      alert('Sync failed. Please try again later.');
-    } finally {
-      setIsSyncing(false);
-    }
+    alert('Legacy data synchronization is currently in maintenance. Coming soon!');
   };
 
   return (
@@ -738,17 +715,14 @@ const ProfilePage = ({ user, referralCount, setUser }: { user: UserProfile, refe
         </div>
       </div>
 
-      {/* Sync Button */}
-      {!user.v1_synced && (
-        <button 
-          onClick={syncOldPoints}
-          disabled={isSyncing}
-          className="w-full py-4 glass-card border-yellow-500/30 bg-yellow-500/5 text-yellow-500 font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
-        >
-          <RefreshCcw className={cn("w-4 h-4", isSyncing && "animate-spin")} />
-          {isSyncing ? "SYNCING..." : "SYNC ACTIVITY POINTS FROM V1"}
-        </button>
-      )}
+      {/* Fake Sync Button */}
+      <button 
+        disabled={true}
+        className="w-full py-4 glass-card border-white/10 bg-white/5 text-neutral-500 font-black text-xs flex items-center justify-center gap-2 cursor-not-allowed opacity-50 transition-all"
+      >
+        <Lock className="w-4 h-4" />
+        SYNC V1 ACTIVITY (COMING SOON)
+      </button>
 
       <div className="grid grid-cols-2 gap-3">
         <div className="glass-card p-4 flex flex-col items-center text-center border-white/5 bg-[#1e293b]/30">

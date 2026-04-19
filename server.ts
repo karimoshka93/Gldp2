@@ -432,66 +432,6 @@ async function startServer() {
     }
   });
 
-  // Dedicated Firebase Points Sync
-  app.post('/api/user/sync-firebase-points', validateTelegramData, async (req, res) => {
-    try {
-      const { telegramId } = req.body;
-      if (!firestore) return res.status(400).json({ error: 'Firestore not configured' });
-
-      const { data: currentUser, error: checkError } = await supabase
-        .from('profiles')
-        .select('username, airdropRank, v1_synced')
-        .eq('id', telegramId.toString())
-        .single();
-      
-      if (checkError) throw checkError;
-      if (currentUser.v1_synced) return res.status(400).json({ error: 'Already synced.' });
-
-      const collections = ['users', 'profiles', 'players', 'stats'];
-      let firestoreUser: any = null;
-
-      for (const col of collections) {
-        // Try by ID directly
-        const docSnap = await firestore.collection(col).doc(telegramId.toString()).get();
-        if (docSnap.exists) { firestoreUser = docSnap.data(); break; }
-        
-        // Try by telegram_id field
-        const querySnapNum = await firestore.collection(col).where('id', '==', parseInt(telegramId)).limit(1).get();
-        if (!querySnapNum.empty) { firestoreUser = querySnapNum.docs[0].data(); break; }
-
-        const queryByTid = await firestore.collection(col).where('telegram_id', '==', telegramId.toString()).limit(1).get();
-        if (!queryByTid.empty) { firestoreUser = queryByTid.docs[0].data(); break; }
-
-        // Try by username
-        if (currentUser.username) {
-          const qByUsername = await firestore.collection(col).where('username', '==', currentUser.username).limit(1).get();
-          if (!qByUsername.empty) { firestoreUser = qByUsername.docs[0].data(); break; }
-        }
-
-        // Try by ownerId
-        const qByOwnerId = await firestore.collection(col).where('ownerId', '==', telegramId.toString()).limit(1).get();
-        if (!qByOwnerId.empty) { firestoreUser = qByOwnerId.docs[0].data(); break; }
-      }
-
-      if (!firestoreUser) return res.status(404).json({ error: 'No data found in V1 database.' });
-
-      const v1Points = firestoreUser.airdropRank || firestoreUser.airdrop_rank || firestoreUser.points || firestoreUser.rank || 0;
-      const totalPoints = (currentUser.airdropRank || 0) + v1Points;
-
-      const { data: updatedUser, error: updateError } = await supabase
-        .from('profiles')
-        .update({ airdropRank: totalPoints, v1_synced: true })
-        .eq('id', telegramId.toString())
-        .select()
-        .single();
-
-      if (updateError) throw updateError;
-      res.json(updatedUser);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
   // --- End API Routes ---
 
   if (process.env.NODE_ENV !== 'production') {
