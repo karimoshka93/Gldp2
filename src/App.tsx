@@ -17,7 +17,15 @@ import {
   Plus
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { UserProfile, DeveloperCard, Mission } from './types';
+import { 
+  TonConnectUIProvider, 
+  TonConnectButton 
+} from '@tonconnect/ui-react';
+import { 
+  UserProfile, 
+  DeveloperCard, 
+  Mission 
+} from './types';
 
 // --- Components ---
 
@@ -60,8 +68,12 @@ const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: 
 const Header = ({ user }: { user: UserProfile | null }) => (
   <header className="fixed top-0 left-0 right-0 px-6 pt-10 pb-4 bg-[#0f172a]/80 backdrop-blur-md z-40 flex items-center justify-between border-b border-[#334155]">
     <div className="flex items-center gap-3">
-      <div className="w-10 h-10 rounded-full bg-[#8b5cf6] flex items-center justify-center font-bold text-white shadow-lg border border-[#334155]">
-        {user?.username?.[0]?.toUpperCase() || 'G'}
+      <div className="w-10 h-10 rounded-full bg-[#8b5cf6] flex items-center justify-center font-bold text-white shadow-lg border border-[#334155] overflow-hidden">
+        {user?.photo_url ? (
+          <img src={user.photo_url} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+        ) : (
+          user?.username?.[0]?.toUpperCase() || 'G'
+        )}
       </div>
       <div>
         <p className="text-[10px] text-[#94a3b8] uppercase font-bold tracking-[0.2em]">Collector</p>
@@ -124,11 +136,16 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
     }
   };
 
+  const now = new Date();
   const nextClaimTime = new Date(new Date(user.last_claim_at).getTime() + 4 * 60 * 60 * 1000);
-  const isClaimReady = new Date() >= nextClaimTime;
+  const isClaimReady = now >= nextClaimTime;
+  
+  // Progress for the 4-hour window
+  const timePassed = now.getTime() - new Date(user.last_claim_at).getTime();
+  const progress4h = Math.min((timePassed / (4 * 60 * 60 * 1000)) * 100, 100);
 
   return (
-    <div className="flex flex-col items-center gap-8 pt-6">
+    <div className="flex flex-col items-center gap-8 pt-6 pb-12">
       {/* Balance Display */}
       <motion.div 
         key={Math.floor(tapValue ?? 0)}
@@ -215,6 +232,13 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
 
       {/* Passive Income Claim */}
       <div className="w-full max-w-sm px-6 mt-2">
+        <div className="mb-2 h-1.5 w-full bg-[#1e293b] rounded-full overflow-hidden">
+          <motion.div 
+            initial={{ width: 0 }}
+            animate={{ width: `${progress4h}%` }}
+            className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+          />
+        </div>
         <button 
           onClick={handleClaim}
           disabled={!isClaimReady}
@@ -228,8 +252,10 @@ const HomeTab = ({ user, setUser }: { user: UserProfile, setUser: (u: UserProfil
           <div className="flex items-center gap-3">
             <Clock className="w-5 h-5 text-[#94a3b8]" />
             <div className="text-left">
-              <p className="text-[11px] uppercase tracking-wider font-bold">Accumulated Income</p>
-              <p className="text-[10px] opacity-70">Next claim in: {isClaimReady ? 'READY' : '03h 42m'}</p>
+              <p className="text-[11px] uppercase tracking-wider font-bold">Claim 4h Passive</p>
+              <p className="text-[10px] opacity-70">
+                {isClaimReady ? 'READY TO HARVEST' : `Progress: ${Math.floor(progress4h)}%`}
+              </p>
             </div>
           </div>
           <span className="text-lg font-bold">
@@ -396,13 +422,12 @@ const WalletTab = () => {
       <div className="w-20 h-20 bg-blue-500/10 rounded-3xl flex items-center justify-center mb-6 border border-blue-500/20">
          <WalletIcon className="w-10 h-10 text-blue-500" />
       </div>
-      <h2 className="text-3xl font-black leading-tight">TON Integration Coming Soon</h2>
-      <p className="text-sm text-neutral-500 mt-4">Connect your TON Wallet to secure your allocation and participate in the upcoming GLD Airdrop event.</p>
+      <h2 className="text-3xl font-black leading-tight">Connect TON Wallet</h2>
+      <p className="text-sm text-neutral-500 mt-4 mb-8">Secure your allocation for the upcoming GLD Airdrop by connecting your wallet.</p>
       
-      <button className="mt-10 px-8 py-4 bg-white text-black font-black rounded-2xl w-full flex items-center justify-center gap-3 active:scale-95 transition-all">
-         TON CONNECT
-         <ExternalLink className="w-4 h-4" />
-      </button>
+      <div className="w-full flex justify-center">
+        <TonConnectButton />
+      </div>
     </div>
   );
 };
@@ -426,7 +451,11 @@ export default function App() {
         const telegramId = tgUser?.id?.toString() || '12345'; // Fallback for safety
         const username = tgUser?.username || 'mockuser';
         const first_name = tgUser?.first_name || 'Mock';
-
+        const photo_url = tgUser?.photo_url || null;
+        
+        // --- Referral Capture ---
+        const startParam = tg?.initDataUnsafe?.start_param; 
+        
         const res = await fetch('/api/user/sync', {
           method: 'POST',
           headers: { 
@@ -436,7 +465,9 @@ export default function App() {
           body: JSON.stringify({
             telegramId,
             username,
-            first_name
+            first_name,
+            photo_url,
+            referred_by: startParam 
           })
         });
         
@@ -495,28 +526,30 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0f172a] pb-32">
-      <Header user={user} />
-      
-      <main className="pt-24 min-h-screen max-w-lg mx-auto">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.2 }}
-          >
-            {activeTab === 'home' && user && <HomeTab user={user} setUser={setUser} />}
-            {activeTab === 'developers' && user && <DevelopersTab user={user} setUser={setUser} />}
-            {activeTab === 'missions' && user && <MissionsTab user={user} />}
-            {activeTab === 'leaderboard' && <LeaderboardTab />}
-            {activeTab === 'wallet' && <WalletTab />}
-          </motion.div>
-        </AnimatePresence>
-      </main>
+    <TonConnectUIProvider manifestUrl="https://ais-dev-xcf5rbjmfh3stwlgnnznwp-278755823756.europe-west1.run.app/tonconnect-manifest.json">
+      <div className="min-h-screen bg-[#0f172a] pb-32">
+        <Header user={user} />
+        
+        <main className="pt-24 min-h-screen max-w-lg mx-auto">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              {activeTab === 'home' && user && <HomeTab user={user} setUser={setUser} />}
+              {activeTab === 'developers' && user && <DevelopersTab user={user} setUser={setUser} />}
+              {activeTab === 'missions' && user && <MissionsTab user={user} />}
+              {activeTab === 'leaderboard' && <LeaderboardTab />}
+              {activeTab === 'wallet' && <WalletTab />}
+            </motion.div>
+          </AnimatePresence>
+        </main>
 
-      <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
-    </div>
+        <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
+      </div>
+    </TonConnectUIProvider>
   );
 }

@@ -33,7 +33,7 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 // Sync endpoint
 app.post('/api/user/sync', async (req, res) => {
   try {
-    const { telegramId, username, first_name } = req.body;
+    const { telegramId, username, first_name, photo_url, referred_by } = req.body;
     if (!telegramId) return res.status(400).json({ error: 'telegramId is required' });
 
     // 1. Check Supabase
@@ -56,9 +56,10 @@ app.post('/api/user/sync', async (req, res) => {
           id: telegramId.toString(),
           username: firestoreUser.username || username,
           first_name: firestoreUser.first_name || first_name,
+          photo_url: photo_url || null,
           balance: firestoreUser.balance || 0,
           active_multiplier: firestoreUser.multiplier || 0.1,
-          airdrop_rank: firestoreUser.rank || 0,
+          airdrop_rank: firestoreUser.rank || firestoreUser.airdrop_rank || 0,
           energy: firestoreUser.energy || 1000,
           game_tickets: firestoreUser.game_tickets || 5,
           extra_combat_matches: firestoreUser.extra_combat_matches || 0,
@@ -84,15 +85,34 @@ app.post('/api/user/sync', async (req, res) => {
           id: telegramId.toString(),
           username,
           first_name,
+          photo_url,
+          referred_by: referred_by || null,
           balance: 0,
           active_multiplier: 0.1,
           energy: 1000,
           game_tickets: 5,
+          airdrop_rank: 0,
           last_claim_at: new Date().toISOString()
         }])
         .select()
         .single();
-      if (!createError) user = newUser;
+      
+      if (!createError) {
+        user = newUser;
+
+        // --- REFERRAL LOGIC ---
+        // Give the referrer 50 activity points
+        if (referred_by && referred_by !== telegramId.toString()) {
+           const { data: referrer } = await supabase.from('profiles').select('airdrop_rank').eq('id', referred_by).single();
+           if (referrer) {
+              await supabase.from('profiles').update({ airdrop_rank: (referrer.airdrop_rank || 0) + 50 }).eq('id', referred_by);
+           }
+        }
+      }
+    } else if (photo_url && user.photo_url !== photo_url) {
+      // Update photo if changed in Telegram
+      await supabase.from('profiles').update({ photo_url }).eq('id', telegramId.toString());
+      user.photo_url = photo_url;
     }
 
     res.json(user);
