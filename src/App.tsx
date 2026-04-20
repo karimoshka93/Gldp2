@@ -483,44 +483,35 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
     }
 
     if (m.type === 'social') {
-      // 1. Check if we're in "Verification" mode
-      if (claiming === m.id) {
-        // User clicked again to verify
-        try {
-          const res = await fetch('/api/user/complete-quest', {
-            method: 'POST',
-            headers: { 
-              'Content-Type': 'application/json',
-              'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
-            },
-            body: JSON.stringify({
-              telegramId: user.id,
-              questId: m.id,
-              reward: m.reward,
-              points: m.points,
-              type: m.type
-            })
-          });
-          const data = await res.json();
-          if (data.id) {
-            setUser(data);
-            alert("Verification successful! Reward added.");
-          } else {
-            alert(data.error || "Please visit the link first.");
-          }
-        } catch (err) {
-          console.error(err);
-        } finally {
-          setClaiming(null);
-        }
-        return;
-      }
-
-      // 2. Initial click: Open link and set claiming state
+      // Reward IMMEDIATELY as requested (no "Verify" button)
       window.open(m.link, '_blank');
-      setClaiming(m.id);
-      alert("Opening task... Please return and click the task again to VERIFY and CLAIM your reward.");
-      
+      try {
+        const res = await fetch('/api/user/complete-quest', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+          },
+          body: JSON.stringify({
+            telegramId: user.id,
+            questId: m.id,
+            reward: m.reward,
+            points: m.points,
+            type: m.type
+          })
+        });
+        const data = await res.json();
+        if (data.id) {
+          setUser(data);
+          // Only alert once
+          if (!claiming) {
+            alert(`Social Quest Complete! Reward for visiting ${m.title} added to balance.`);
+          }
+        }
+      } catch (err) {
+        console.error("Social quest completion error:", err);
+      }
+      return;
     } else if (m.type === 'daily') {
       setClaiming(m.id);
       try {
@@ -549,12 +540,18 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       if (adCount >= 10) return alert('Daily ads limit reached!');
       if (adCooldown > 0) return alert(`Please wait ${Math.floor(adCooldown/60)}m ${adCooldown%60}s for next ad`);
 
-      // Adsgram logic
+      // Adsgram logic - Aggressive check
       let adsgram = (window as any).Adsgram;
       
-      // Attempt manual re-sync if blocked or loading
-      if (!adsgram && document.querySelector('script[src*="adsgram"]')) {
-         console.warn("Adsgram detected in DOM but not on window. Attempting re-init...");
+      if (!adsgram) {
+        // Fallback: try to find script and re-inject if missing
+        const existing = document.querySelector('script[src*="adsgram"]');
+        if (!existing) {
+          const s = document.createElement('script');
+          s.src = "https://sad.adsgram.ai/js/adsgram-sdk.js";
+          document.head.appendChild(s);
+          return alert('Ads SDK initializing. Please wait 3 seconds and tap again.');
+        }
       }
 
       if (adsgram) {
@@ -700,8 +697,6 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
                 <div className="text-[10px] font-mono text-neutral-500 font-bold">
                   {Math.floor(adCooldown/60)}m {adCooldown%60}s
                 </div>
-              ) : claiming === m.id ? (
-                <div className="px-3 py-1 bg-blue-500 text-white text-[10px] font-black rounded-lg animate-bounce">VERIFY</div>
               ) : (
                 <ChevronRight className="w-5 h-5 opacity-20" />
               )}

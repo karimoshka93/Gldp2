@@ -307,7 +307,11 @@ app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    const snapshot = await fdb.collection('users').orderBy('airdropRank', 'desc').limit(100).get();
+    const { sortBy = 'airdropRank' } = req.query;
+    const validSorts = ['airdropRank', 'multiplier', 'balance'];
+    const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdropRank';
+
+    const snapshot = await fdb.collection('users').orderBy(sortColumn, 'desc').limit(100).get();
     res.json(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
   } catch (err: any) {
     res.status(500).json({ error: err.message });

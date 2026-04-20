@@ -396,8 +396,10 @@ async function startServer() {
   app.get('/api/leaderboard', async (req, res) => {
     try {
       const { sortBy = 'airdropRank' } = req.query;
-      const validSorts = ['airdropRank', 'multiplier'];
+      const validSorts = ['airdropRank', 'multiplier', 'balance'];
       const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdropRank';
+
+      console.log(`[LEADERBOARD] Fetching sorted by ${sortColumn} DESC`);
 
       const snapshot = await fdb.collection('users')
         .orderBy(sortColumn, 'desc')
@@ -411,7 +413,7 @@ async function startServer() {
 
       res.json(data);
     } catch (err: any) {
-      console.error('[LEADERBOARD] Error:', err.message);
+      console.error('[LEADERBOARD] Fatal Error:', err.message);
       res.status(500).json({ error: err.message });
     }
   });
