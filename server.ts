@@ -5,26 +5,11 @@ import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
-import admin from 'firebase-admin';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3000;
-
-// Firebase Setup (Migration Bridge)
-const firebaseServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
-  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT) 
-  : null;
-
-if (firebaseServiceAccount) {
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(firebaseServiceAccount)
-    });
-  }
-}
-const firestore = firebaseServiceAccount ? admin.firestore() : null;
 
 // Supabase Setup
 const supabaseUrl = process.env.SUPABASE_URL || '';
@@ -94,7 +79,6 @@ async function startServer() {
             multiplier: 0.1,
             energy: 1000,
             referred_by: req.body.referred_by || null,
-            v1_synced: false,
             updated_at: new Date().toISOString()
           }])
           .select()

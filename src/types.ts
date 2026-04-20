@@ -3,16 +3,13 @@ export interface UserProfile {
   username?: string;
   first_name?: string;
   photo_url?: string | null;
-  airdropRank: number; // Activity PointsFoundation
+  airdropRank: number; 
   balance: number; 
-  multiplier: number; // Passive income per second
+  multiplier: number; 
   energy: number;
   referred_by?: string;
   last_claim_at: string;
-  last_energy_reset_at?: string;
   daily_quest_states: Record<string, any>;
-  code_task_states: Record<string, any>;
-  v1_synced?: boolean;
   updated_at: string;
   created_at: string;
 }

@@ -106,7 +106,7 @@ const Header = ({ user, setActiveTab }: { user: UserProfile | null, setActiveTab
   </header>
 );
 
-const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (u: UserProfile) => void, syncBalance: (b: number, e: number) => Promise<void> }) => {
+const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, syncBalance: (b: number, e: number) => Promise<void> }) => {
   const [tapValue, setTapValue] = useState(user.balance);
   const [floatingTexts, setFloatingTexts] = useState<{ id: number, x: number, y: number }[]>([]);
   const tapCooldownRef = useRef<NodeJS.Timeout | null>(null);
@@ -130,26 +130,31 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
   }, [user.last_claim_at, user.multiplier]);
 
   const handleTap = (e: React.MouseEvent | React.TouchEvent) => {
-    if (user.energy <= 0) return;
+    if (!user || user.energy <= 0) return;
 
     const x = 'touches' in e ? e.touches[0].clientX : e.clientX;
     const y = 'touches' in e ? e.touches[0].clientY : e.clientY;
     
-    // Calculate new values based on current state to avoid stale closure issues
-    const newBalance = (user.balance || 0) + 1;
-    const newEnergy = Math.max(0, user.energy - 1);
+    // Use functional update to always get the latest state without closure issues
+    setUser((prev: UserProfile | null) => {
+      if (!prev || prev.energy <= 0) return prev;
+      
+      const newBalance = (prev.balance || 0) + 1;
+      const newEnergy = Math.max(0, prev.energy - 1);
+      
+      // Update tap visual separately
+      setTapValue(newBalance);
+
+      if (tapCooldownRef.current) clearTimeout(tapCooldownRef.current);
+      tapCooldownRef.current = setTimeout(() => {
+        syncBalance(newBalance, newEnergy);
+      }, 1500);
+
+      return { ...prev, balance: newBalance, energy: newEnergy };
+    });
 
     setFloatingTexts(prev => [...prev, { id: Date.now(), x, y }]);
     
-    // Update local state IMMEDIATELY
-    setTapValue(newBalance);
-    setUser({ ...user, balance: newBalance, energy: newEnergy });
-
-    if (tapCooldownRef.current) clearTimeout(tapCooldownRef.current);
-    tapCooldownRef.current = setTimeout(() => {
-      syncBalance(newBalance, newEnergy);
-    }, 1500);
-
     setTimeout(() => {
       setFloatingTexts(prev => prev.filter(t => t.id !== Date.now()));
     }, 800);
@@ -158,12 +163,12 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
   // Client-side visual energy refill (1 per sec)
   useEffect(() => {
     const energyInterval = setInterval(() => {
-      if (user.energy < 1000) {
-        setUser(prev => prev ? { ...prev, energy: Math.min(1000, prev.energy + 1) } : null);
+      if (user && user.energy < 1000) {
+        setUser((prev: UserProfile | null) => prev ? { ...prev, energy: Math.min(1000, prev.energy + 1) } : null);
       }
     }, 1000);
     return () => clearInterval(energyInterval);
-  }, [user.energy < 1000]);
+  }, [user?.energy]);
 
   // Sync tapValue if user.balance changes externally (e.g. claim)
   useEffect(() => {
@@ -335,7 +340,7 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (
   );
 };
 
-const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: (u: UserProfile) => void, syncBalance: (b: number, e: number) => Promise<void> }) => {
+const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, syncBalance: (b: number, e: number) => Promise<void> }) => {
   const devIcons = [Cpu, Globe, Database, Terminal, Shield, Workflow, Layers, Server, Code, HardDrive];
   
   const devs: DeveloperCard[] = Array.from({ length: 30 }, (_, i) => ({
@@ -418,7 +423,7 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
   );
 };
 
-const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, referralCount: number, setUser: (u: UserProfile) => void }) => {
+const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, referralCount: number, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>> }) => {
   const [claiming, setClaiming] = useState<string | null>(null);
   const [adCooldown, setAdCooldown] = useState<number>(0);
   const [adCount, setAdCount] = useState(0);
@@ -684,7 +689,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
   );
 };
 
-const ProfilePage = ({ user, referralCount, setUser, errorDetails }: { user: UserProfile, referralCount: number, setUser: (u: UserProfile) => void, errorDetails: string | null }) => {
+const ProfilePage = ({ user, referralCount, setUser, errorDetails }: { user: UserProfile, referralCount: number, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, errorDetails: string | null }) => {
   const shareLink = `https://t.me/GLDp_bot/app?startapp=${user.id}`;
   const telegramShare = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent('Join me on GLD Tap and earn tokens! 🚀')}`;
   const [isSyncing, setIsSyncing] = useState(false);
@@ -1007,6 +1012,12 @@ const WalletTab = () => {
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [user, setUser] = useState<UserProfile | null>(null);
+  const userRef = useRef<UserProfile | null>(null);
+  
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
   const [referralCount, setReferralCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
@@ -1029,16 +1040,16 @@ export default function App() {
   useEffect(() => {
     // Initial Sync
     const sync = async () => {
-      try {
-        const tg = window.Telegram?.WebApp;
-        if (tg) tg.ready();
+      const tg = window.Telegram?.WebApp;
+      if (tg) tg.ready();
 
-        const tgUser = tg?.initDataUnsafe?.user;
-        const telegramId = tgUser?.id?.toString() || '12345';
-        const username = tgUser?.username || 'mockuser';
-        const first_name = tgUser?.first_name || 'Mock';
-        const photo_url = tgUser?.photo_url || null;
-        
+      const tgUser = tg?.initDataUnsafe?.user;
+      const telegramId = tgUser?.id?.toString() || '12345';
+      const username = tgUser?.username || 'mockuser';
+      const first_name = tgUser?.first_name || 'Mock';
+      const photo_url = tgUser?.photo_url || null;
+      
+      try {
         const startParam = tg?.initDataUnsafe?.start_param; 
         
         const res = await fetch('/api/user/sync', {
@@ -1070,9 +1081,9 @@ export default function App() {
             balance: 0,
             multiplier: 0.1,
             energy: 1000,
-            v1_synced: false,
             last_claim_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
             daily_quest_states: {}
           };
           setUser(fallbackUser);
@@ -1099,9 +1110,9 @@ export default function App() {
           balance: 0,
           multiplier: 0.1,
           energy: 1000,
-          v1_synced: false,
           last_claim_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
           daily_quest_states: {}
         };
         setUser(localUser);
