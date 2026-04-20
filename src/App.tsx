@@ -645,7 +645,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
             <motion.div 
               key={m.id} 
               whileTap={{ scale: done ? 1 : 0.98 }}
-              onClick={() => !done && !claiming && handleQuestAction(m)}
+              onClick={() => !done && (!claiming || claiming === m.id) && handleQuestAction(m)}
               className={cn(
                 "glass-card p-5 flex items-center justify-between border-white/5 transition-all",
                 done ? "opacity-50 grayscale bg-white/5" : "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
