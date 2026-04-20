@@ -348,21 +348,27 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
 const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, syncBalance: (b: number, e: number) => Promise<void> }) => {
   const devIcons = [Cpu, Globe, Database, Terminal, Shield, Workflow, Layers, Server, Code, HardDrive];
   
-  const devs: DeveloperCard[] = Array.from({ length: 30 }, (_, i) => ({
-    id: `dev-${i+1}`,
-    name: `Senior Dev #${i + 1}`,
-    description: `Optimizes tapping throughput v${i + 1}`,
-    base_cost: Math.floor(1000 * Math.pow(1.5, i)),
-    base_boost: (i + 1) * 0.05,
-    image_url: '' // We use Lucide icons instead
-  }));
+  const devs: DeveloperCard[] = Array.from({ length: 30 }, (_, i) => {
+    const id = `dev-${i+1}`;
+    const level = user.upgrades?.[id] || 0;
+    const baseCost = Math.floor(1000 * Math.pow(1.5, i));
+    const currentCost = Math.floor(baseCost * Math.pow(1.6, level));
+    const baseBoost = 0.05 + (i * 0.02);
+    
+    return {
+      id,
+      name: `Senior Dev #${i + 1}`,
+      description: `Optimizes tapping throughput v${i + 1}`,
+      base_cost: currentCost,
+      base_boost: baseBoost,
+      multiplier_per_hour: baseBoost * 3600,
+      image_url: '' 
+    };
+  });
 
   const handleUpgrade = async (dev: DeveloperCard) => {
     try {
       if (user.balance < dev.base_cost) return alert("Insufficient GLDp!");
-      
-      // Force sync balance before upgrade to ensure DB is up to date
-      await syncBalance(user.balance, user.energy);
       
       const res = await fetch('/api/user/upgrade', {
         method: 'POST',
@@ -380,7 +386,7 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
       const data = await res.json();
       if (data.id) {
         setUser(data);
-        alert(`Successfully hired ${dev.name}!`);
+        alert(`Successfully hired ${dev.name}! Level is now ${data.upgrades?.[dev.id] || 1}`);
       } else {
         alert(data.error || 'Upgrade failed');
       }
@@ -398,6 +404,7 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
       
       {devs.map((dev, i) => {
         const Icon = devIcons[i % devIcons.length];
+        const level = user.upgrades?.[dev.id] || 0;
         return (
           <div key={dev.id} className="glass-card p-4 flex items-center justify-between group bg-[#1e293b]/50 border-white/5 active:bg-white/5">
             <div className="flex items-center gap-4">
@@ -405,10 +412,10 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
                  <Icon className="w-7 h-7 text-indigo-400" />
               </div>
               <div>
-                <p className="font-black text-sm text-white">{dev.name}</p>
+                <p className="font-black text-sm text-white">{dev.name} <span className="text-yellow-500 text-[10px] ml-1">LVL {level}</span></p>
                 <div className="flex items-center gap-2 mt-1">
                   <TrendingUp className="w-3 h-3 text-green-400" />
-                  <span className="text-[11px] font-black text-green-400">+{dev.base_boost.toFixed(2)} /h</span>
+                  <span className="text-[11px] font-black text-green-400">+{Math.floor(dev.multiplier_per_hour).toLocaleString()} /h</span>
                 </div>
               </div>
             </div>
@@ -419,7 +426,7 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
               <div className="px-4 py-2 rounded-xl bg-indigo-500 text-white font-black text-xs shadow-lg shadow-indigo-500/20 active:scale-90 transition-all">
                 {dev.base_cost.toLocaleString()}
               </div>
-              <span className="text-[8px] uppercase font-bold text-neutral-500">Buy</span>
+              <span className="text-[8px] uppercase font-bold text-neutral-500 tracking-tighter">UPGRADE</span>
             </button>
           </div>
         );
@@ -490,7 +497,8 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
               telegramId: user.id,
               questId: m.id,
               reward: m.reward,
-              points: m.points
+              points: m.points,
+              type: m.type
             })
           });
           const data = await res.json();
@@ -526,7 +534,8 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
             telegramId: user.id,
             questId: m.id,
             reward: m.reward,
-            points: m.points
+            points: m.points,
+            type: m.type
           })
         });
         const data = await res.json();
@@ -541,8 +550,13 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       if (adCooldown > 0) return alert(`Please wait ${Math.floor(adCooldown/60)}m ${adCooldown%60}s for next ad`);
 
       // Adsgram logic
-      // @ts-ignore
-      const adsgram = (window as any).Adsgram;
+      let adsgram = (window as any).Adsgram;
+      
+      // Attempt manual re-sync if blocked or loading
+      if (!adsgram && document.querySelector('script[src*="adsgram"]')) {
+         console.warn("Adsgram detected in DOM but not on window. Attempting re-init...");
+      }
+
       if (adsgram) {
         // @ts-ignore
         const AdController = adsgram.init({ blockId: "28171" });
@@ -581,6 +595,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
   const telegramShare = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent('Join me on GLD Tap and earn tokens! 🚀')}`;
 
   const isCompleted = (id: string) => {
+    if (user.completed_missions?.includes(id)) return true;
     const state = user.daily_quest_states?.[id];
     if (!state) return false;
     return new Date(state).toDateString() === new Date().toDateString();

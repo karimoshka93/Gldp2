@@ -153,6 +153,8 @@ async function startServer() {
           airdropRank: 0,
           energy: 1000,
           daily_quest_states: {},
+          completed_missions: [],
+          upgrades: {},
           last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
           updated_at: admin.firestore.FieldValue.serverTimestamp(),
           created_at: admin.firestore.FieldValue.serverTimestamp(),
@@ -241,7 +243,7 @@ async function startServer() {
   // Quest Completion
   app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
     try {
-      const { telegramId, questId, reward, points } = req.body;
+      const { telegramId, questId, reward, points, type } = req.body;
       const idStr = telegramId.toString();
 
       if (!verifyUserMatch(req, telegramId)) {
@@ -253,21 +255,33 @@ async function startServer() {
       if (!userDoc.exists) throw new Error('User not found');
       const user = userDoc.data()!;
 
-      const questStates = user.daily_quest_states || {};
-      const now = new Date();
-
-      if (questStates[questId]) {
-        const last = new Date(questStates[questId]);
-        if (last.toDateString() === now.toDateString()) {
-          return res.status(400).json({ error: 'Already done today' });
+      if (type === 'social') {
+        const completed = user.completed_missions || [];
+        if (completed.includes(questId)) {
+          return res.status(400).json({ error: 'Already completed' });
         }
-      }
+        await userRef.update({
+          balance: (user.balance || 0) + reward,
+          airdropRank: (user.airdropRank || 0) + points,
+          completed_missions: admin.firestore.FieldValue.arrayUnion(questId)
+        });
+      } else {
+        const questStates = user.daily_quest_states || {};
+        const now = new Date();
 
-      await userRef.update({
-        balance: (user.balance || 0) + reward,
-        airdropRank: (user.airdropRank || 0) + points,
-        daily_quest_states: { ...questStates, [questId]: now.toISOString() }
-      });
+        if (questStates[questId]) {
+          const last = new Date(questStates[questId]);
+          if (last.toDateString() === now.toDateString()) {
+            return res.status(400).json({ error: 'Already done today' });
+          }
+        }
+
+        await userRef.update({
+          balance: (user.balance || 0) + reward,
+          airdropRank: (user.airdropRank || 0) + points,
+          daily_quest_states: { ...questStates, [questId]: now.toISOString() }
+        });
+      }
 
       const updated = (await userRef.get()).data();
       res.json(updated);
@@ -346,7 +360,7 @@ async function startServer() {
   // Upgrade Developer
   app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
     try {
-      const { telegramId, cost, boost } = req.body;
+      const { telegramId, developerId, cost, boost } = req.body;
       
       if (!verifyUserMatch(req, telegramId)) {
         return res.status(403).json({ error: 'FORBIDDEN' });
@@ -357,15 +371,17 @@ async function startServer() {
       if (!userDoc.exists) throw new Error('User not found');
       const user = userDoc.data()!;
 
-      if ((user.balance + 2) < cost) {
+      if ((user.balance || 0) < cost) {
         return res.status(400).json({ error: 'Insufficient balance' });
       }
 
-      const newBalance = Math.max(0, user.balance - cost);
+      const upgrades = user.upgrades || {};
+      const nextLevel = (upgrades[developerId] || 0) + 1;
 
       await userRef.update({
-        balance: newBalance,
+        balance: (user.balance || 0) - cost,
         multiplier: (user.multiplier || 0.1) + boost,
+        [`upgrades.${developerId}`]: nextLevel,
         updated_at: admin.firestore.FieldValue.serverTimestamp()
       });
 

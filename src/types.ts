@@ -10,6 +10,8 @@ export interface UserProfile {
   referred_by?: string;
   last_claim_at: string;
   daily_quest_states: Record<string, any>;
+  completed_missions: string[];
+  upgrades: Record<string, number>;
   updated_at: string;
   created_at: string;
 }
@@ -20,6 +22,7 @@ export interface DeveloperCard {
   description: string;
   base_cost: number;
   base_boost: number;
+  multiplier_per_hour: number;
   image_url: string;
 }
 

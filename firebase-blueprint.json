@@ -14,6 +14,8 @@
         "airdropRank": { "type": "integer", "default": 0 },
         "energy": { "type": "integer", "default": 1000 },
         "daily_quest_states": { "type": "object", "default": {} },
+        "completed_missions": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "upgrades": { "type": "object", "default": {} },
         "last_claim_at": { "type": "string", "format": "date-time" },
         "updated_at": { "type": "string", "format": "date-time" },
         "created_at": { "type": "string", "format": "date-time" },
