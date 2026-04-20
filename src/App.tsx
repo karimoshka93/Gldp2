@@ -588,7 +588,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
     }
   };
 
-  const shareLink = `https://t.me/GLDp_bot/app?startapp=${user.id}`;
+  const shareLink = `https://t.me/GLDp_bot?startapp=${user.id}`;
   const telegramShare = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent('Join me on GLD Tap and earn tokens! 🚀')}`;
 
   const isCompleted = (id: string) => {
@@ -616,7 +616,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
               </div>
               <div>
                 <p className="font-black text-sm text-white">Network Growth</p>
-                <p className="text-[10px] text-indigo-400 font-mono">+50 Points / Invite</p>
+                <p className="text-[10px] text-indigo-400 font-mono">+50 Points & +25k GLDp / Invite</p>
               </div>
             </div>
             <div className="text-right">
@@ -709,7 +709,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
 };
 
 const ProfilePage = ({ user, referralCount, setUser, errorDetails }: { user: UserProfile, referralCount: number, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, errorDetails: string | null }) => {
-  const shareLink = `https://t.me/GLDp_bot/app?startapp=${user.id}`;
+  const shareLink = `https://t.me/GLDp_bot?startapp=${user.id}`;
   const telegramShare = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent('Join me on GLD Tap and earn tokens! 🚀')}`;
   const [isSyncing, setIsSyncing] = useState(false);
 
