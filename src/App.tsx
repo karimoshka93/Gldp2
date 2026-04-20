@@ -1161,7 +1161,22 @@ export default function App() {
       <div className="min-h-screen bg-[#0f172a] pb-32">
         <Header user={user} setActiveTab={setActiveTab} />
         
-        <main className="pt-24 min-h-screen max-w-lg mx-auto">
+        {errorDetails && (
+          <div className="px-6 pt-24">
+            <div className="glass-card p-4 border-red-500/50 bg-red-500/5 text-center">
+              <p className="text-red-400 text-xs font-bold uppercase mb-2">Connection Disturbed</p>
+              <p className="text-white text-[10px] opacity-70 mb-3">{errorDetails}</p>
+              <button 
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-red-500/20 text-red-400 text-[10px] font-black uppercase rounded-lg hover:bg-red-500/30 transition-all"
+              >
+                Re-establish Link
+              </button>
+            </div>
+          </div>
+        )}
+
+        <main className={`min-h-screen max-w-lg mx-auto ${errorDetails ? 'pt-4' : 'pt-24'}`}>
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}

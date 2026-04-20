@@ -1,180 +1,214 @@
 import express from 'express';
-import { createClient } from '@supabase/supabase-js';
 import admin from 'firebase-admin';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-// Firebase Setup (Migration Bridge)
-const firebaseServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
-  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT) 
-  : null;
-
-if (firebaseServiceAccount && !admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(firebaseServiceAccount)
-  });
+// Firebase Setup
+const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+let firebaseConfig: any = {};
+if (fs.existsSync(configPath)) {
+  firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 }
-const firestore = firebaseServiceAccount ? admin.firestore() : null;
 
-// Supabase Setup
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+if (!admin.apps.length) {
+  // If we have a service account in env vars, use it (Required for Vercel)
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        projectId: firebaseConfig.projectId,
+      });
+    } catch (e) {
+      console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT:', e);
+      admin.initializeApp({ projectId: firebaseConfig.projectId });
+    }
+  } else {
+    // Normal initialization for AI Studio environment
+    admin.initializeApp({
+      projectId: firebaseConfig.projectId,
+    });
+  }
+}
+
+const fdb = firebaseConfig.firestoreDatabaseId ? admin.firestore(firebaseConfig.firestoreDatabaseId) : admin.firestore();
+
+// Middleware to validate Telegram WebApp initData 
+const verifyTelegramInitData = (initData: string): { id: number; username?: string; first_name?: string } | null => {
+  if (!initData) return null;
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) return null;
+
+  try {
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get('hash');
+    urlParams.delete('hash');
+    const dataCheckString = Array.from(urlParams.entries())
+      .map(([key, value]) => `${key}=${value}`)
+      .sort()
+      .join('\n');
+
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    if (calculatedHash === hash) {
+      const userStr = urlParams.get('user');
+      if (userStr) return JSON.parse(userStr);
+    }
+  } catch (e) {}
+  return null;
+};
+
+const validateTelegramData = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const initData = req.headers['x-telegram-init-data'] as string;
+  const tgUser = verifyTelegramInitData(initData);
+  if (!tgUser && process.env.NODE_ENV === 'production') {
+    return res.status(401).json({ error: 'UNAUTHORIZED' });
+  }
+  (req as any).tgUser = tgUser || { id: 0 };
+  next();
+};
+
+const verifyUserMatch = (req: express.Request, targetId: any): boolean => {
+  const authId = (req as any).tgUser?.id?.toString();
+  if (!authId && process.env.NODE_ENV !== 'production') return true;
+  return authId === targetId?.toString();
+};
 
 // --- API Routes ---
 
-// Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
-// Sync endpoint
-app.post('/api/user/sync', async (req, res) => {
+app.post('/api/user/sync', validateTelegramData, async (req, res) => {
   try {
     const { telegramId, username, first_name, photo_url, referred_by } = req.body;
-    if (!telegramId) return res.status(400).json({ error: 'telegramId is required' });
+    const idStr = telegramId?.toString();
+    if (!idStr || !verifyUserMatch(req, idStr)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-    // 1. Check Supabase
-    let { data: user, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', telegramId.toString())
-      .single();
+    const userRef = fdb.collection('users').doc(idStr);
+    let userDoc = await userRef.get();
+    let user = userDoc.exists ? userDoc.data() : null;
 
-    if (error && error.code !== 'PGRST116') throw error;
-
-    // 2. Migration Bridge
-    if (!user && firestore) {
-      const docRef = firestore.collection('users').doc(telegramId.toString());
-      const docSnap = await docRef.get();
-      
-      if (docSnap.exists) {
-        const firestoreUser = docSnap.data() as any;
-        const migratedData = {
-          id: telegramId.toString(),
-          username: firestoreUser.username || username,
-          first_name: firestoreUser.first_name || first_name,
-          photo_url: photo_url || null,
-          balance: firestoreUser.balance || 0,
-          active_multiplier: firestoreUser.multiplier || 0.1,
-          airdrop_rank: firestoreUser.rank || firestoreUser.airdrop_rank || 0,
-          energy: firestoreUser.energy || 1000,
-          game_tickets: firestoreUser.game_tickets || 5,
-          extra_combat_matches: firestoreUser.extra_combat_matches || 0,
-          combat_matches_today: 0,
-          last_claim_at: new Date().toISOString()
-        };
-
-        const { data: newUser, error: createError } = await supabase
-          .from('profiles')
-          .insert([migratedData])
-          .select()
-          .single();
-
-        if (!createError) user = newUser;
-      }
-    }
-
-    // 3. New User
     if (!user) {
-      const { data: newUser, error: createError } = await supabase
-        .from('profiles')
-        .insert([{
-          id: telegramId.toString(),
-          username,
-          first_name,
-          photo_url,
-          referred_by: referred_by || null,
-          balance: 0,
-          active_multiplier: 0.1,
-          energy: 1000,
-          game_tickets: 5,
-          airdrop_rank: 0,
-          last_claim_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
-      
-      if (!createError) {
-        user = newUser;
-
-        // --- REFERRAL LOGIC ---
-        // Give the referrer 50 activity points
-        if (referred_by && referred_by !== telegramId.toString()) {
-           const { data: referrer } = await supabase.from('profiles').select('airdrop_rank').eq('id', referred_by).single();
-           if (referrer) {
-              await supabase.from('profiles').update({ airdrop_rank: (referrer.airdrop_rank || 0) + 50 }).eq('id', referred_by);
-           }
-        }
+      user = {
+        id: idStr,
+        username: username || '',
+        first_name: first_name || '',
+        photo_url: photo_url || null,
+        referred_by: referred_by || null,
+        balance: 0,
+        multiplier: 0.1,
+        airdropRank: 0,
+        energy: 1000,
+        daily_quest_states: {},
+        last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp(),
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      await userRef.set(user);
+    } else {
+      // Energy refill
+      const lastUpdate = user.updated_at?.toDate?.() || new Date(user.updated_at);
+      const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
+      const refilled = Math.min(1000, (user.energy || 0) + Math.max(0, diffSecs));
+      if (refilled !== user.energy) {
+        await userRef.update({ energy: refilled, updated_at: admin.firestore.FieldValue.serverTimestamp() });
+        user.energy = refilled;
       }
-    } else if (photo_url && user.photo_url !== photo_url) {
-      // Update photo if changed in Telegram
-      await supabase.from('profiles').update({ photo_url }).eq('id', telegramId.toString());
-      user.photo_url = photo_url;
     }
 
-    res.json(user);
+    const refSnapshot = await fdb.collection('users').where('referred_by', '==', idStr).count().get();
+    res.json({ ...user, referralCount: refSnapshot.data().count });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Add other routes identical to server.ts here...
-// (I will keep this focused for the sync migration)
+const grantAdReward = async (id: string) => {
+  const userRef = fdb.collection('users').doc(id);
+  const userDoc = await userRef.get();
+  if (!userDoc.exists) return null;
+  const user = userDoc.data()!;
+  const questStates = user.daily_quest_states || {};
+  const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
+  const today = new Date().toDateString();
+  const lastDate = new Date(adState.last_ad_at || 0).toDateString();
+  const countToday = today === lastDate ? adState.count : 0;
+  if (countToday >= 10) return null;
 
-// Claim Passive Income
-app.post('/api/user/claim', async (req, res) => {
+  await userRef.update({
+    balance: (user.balance || 0) + 2500,
+    airdropRank: (user.airdropRank || 0) + 15,
+    daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
+  });
+  return (await userRef.get()).data();
+};
+
+app.get('/api/adsgram/reward', async (req, res) => {
+  const userid = req.query.userid || req.query.userId || req.query.user_id;
+  if (!userid) return res.status(400).send('missing userid');
+  const success = await grantAdReward(userid.toString());
+  res.send(success ? 'ok' : 'error');
+});
+
+app.post('/api/user/sync-taps', validateTelegramData, async (req, res) => {
+  try {
+    const { telegramId, taps } = req.body;
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+    const userRef = fdb.collection('users').doc(telegramId.toString());
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) throw new Error('User not found');
+    const user = userDoc.data()!;
+    const validTaps = Math.min(taps || 0, user.energy);
+    await userRef.update({ 
+      balance: (user.balance || 0) + validTaps, 
+      energy: Math.max(0, user.energy - validTaps), 
+      updated_at: admin.firestore.FieldValue.serverTimestamp() 
+    });
+    res.json((await userRef.get()).data());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/user/claim', validateTelegramData, async (req, res) => {
   try {
     const { telegramId } = req.body;
-    const { data: user, error: fetchError } = await supabase.from('profiles').select('*').eq('id', telegramId.toString()).single();
-    if (fetchError) throw fetchError;
-
-    const now = new Date();
-    const lastClaim = new Date(user.last_claim_at);
-    const diffHrs = (now.getTime() - lastClaim.getTime()) / (1000 * 60 * 60);
-    const earnings = Math.floor(Math.min(diffHrs, 4) * 3600 * user.active_multiplier);
-
-    const { data: updatedUser, error: updateError } = await supabase
-      .from('profiles')
-      .update({ balance: user.balance + earnings, last_claim_at: now.toISOString() })
-      .eq('id', telegramId.toString()).select().single();
-    if (updateError) throw updateError;
-    res.json({ user: updatedUser, earned: earnings });
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+    const userRef = fdb.collection('users').doc(telegramId.toString());
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) throw new Error('User not found');
+    const user = userDoc.data()!;
+    const lastClaim = user.last_claim_at?.toDate?.() || new Date(user.last_claim_at || user.created_at);
+    const earnings = Math.floor(((Date.now() - lastClaim.getTime()) / 1000) * (user.multiplier || 0.1));
+    if (earnings <= 0) return res.status(400).json({ error: 'Nothing to claim yet' });
+    await userRef.update({
+      balance: (user.balance || 0) + earnings,
+      last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ user: (await userRef.get()).data(), earned: earnings });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Upgrade Developer
-app.post('/api/user/upgrade', async (req, res) => {
-  try {
-    const { telegramId, cost, boost } = req.body;
-    const { data: user, error: fetchError } = await supabase.from('profiles').select('*').eq('id', telegramId.toString()).single();
-    if (fetchError) throw fetchError;
-    if (user.balance < cost) return res.status(400).json({ error: 'Insufficient balance' });
-
-    const { data: updatedUser, error: updateError } = await supabase
-      .from('profiles')
-      .update({ balance: user.balance - cost, active_multiplier: user.active_multiplier + boost })
-      .eq('id', telegramId.toString()).select().single();
-    if (updateError) throw updateError;
-    res.json(updatedUser);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Leaderboard
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    const { data, error } = await supabase.from('profiles').select('id, username, first_name, airdrop_rank').order('airdrop_rank', { ascending: false }).limit(200);
-    if (error) throw error;
-    res.json(data);
+    const snapshot = await fdb.collection('users').orderBy('airdropRank', 'desc').limit(100).get();
+    res.json(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
+
+export default app;
 
 export default app;

@@ -2,20 +2,35 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createClient } from '@supabase/supabase-js';
+import admin from 'firebase-admin';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import fs from 'fs';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3000;
 
-// Supabase Setup
-const supabaseUrl = process.env.SUPABASE_URL || '';
-// Use SERVICE ROLE KEY if available for security, otherwise fall back to ANON
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+// Firebase Setup
+const configPath = path.join(__dirname, 'firebase-applet-config.json');
+let firebaseConfig: any = {};
+if (fs.existsSync(configPath)) {
+  firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+}
+
+admin.initializeApp({
+  projectId: firebaseConfig.projectId,
+});
+
+const db = admin.firestore();
+// Use the specific database ID if provided in config, otherwise default
+const firestore = firebaseConfig.firestoreDatabaseId 
+  ? (db as any).terminate().then(() => admin.firestore(firebaseConfig.firestoreDatabaseId)) 
+  : db;
+
+// Note: admin.firestore() is the standard way. If a specific DB ID is needed:
+const fdb = firebaseConfig.firestoreDatabaseId ? admin.firestore(firebaseConfig.firestoreDatabaseId) : admin.firestore();
 
 async function startServer() {
   const app = express();
@@ -101,7 +116,7 @@ async function startServer() {
       const { telegramId, username, first_name, photo_url, referred_by } = req.body;
       const idStr = telegramId?.toString();
       
-      console.log(`[SYNC] Request for: ${username || 'Unknown'} (${idStr})`);
+      console.log(`[SYNC] Firebase Request for: ${username || 'Unknown'} (${idStr})`);
 
       if (!idStr) return res.status(400).json({ error: 'telegramId required' });
 
@@ -109,62 +124,64 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      let { data: user, error } = await supabase.from('profiles').select('*').eq('id', idStr).single();
-
-      if (error && error.code !== 'PGRST116') throw error;
+      const userRef = fdb.collection('users').doc(idStr);
+      let userDoc = await userRef.get();
+      let user = userDoc.exists ? userDoc.data() : null;
 
       if (!user) {
-        console.log(`[SYNC] REGISTERING NEW USER: ${idStr}`);
-        const { data: newUser, error: createError } = await supabase
-          .from('profiles')
-          .insert([{
-            id: idStr,
-            username: username || '',
-            first_name: first_name || '',
-            photo_url: photo_url || null,
-            referred_by: referred_by || null,
-            updated_at: new Date().toISOString()
-          }])
-          .select()
-          .single();
-
-        if (createError) {
-          console.error('[SYNC] Registration Error:', createError);
-          throw createError;
-        }
+        console.log(`[SYNC] REGISTERING NEW FIREBASE USER: ${idStr}`);
+        const newUser = {
+          id: idStr,
+          username: username || '',
+          first_name: first_name || '',
+          photo_url: photo_url || null,
+          referred_by: referred_by || null,
+          balance: 0,
+          multiplier: 0.1,
+          airdropRank: 0,
+          energy: 1000,
+          daily_quest_states: {},
+          last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
+          updated_at: admin.firestore.FieldValue.serverTimestamp(),
+          created_at: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        await userRef.set(newUser);
         user = newUser;
       }
 
       // Energy calculation logic remains robust...
       if (user) {
-        const lastUpdate = new Date(user.updated_at || user.created_at);
+        const lastUpdate = user.updated_at?.toDate?.() || new Date(user.updated_at);
         const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
         const refilled = Math.min(1000, (user.energy || 0) + Math.max(0, diffSecs));
 
         if (refilled !== user.energy) {
-          const { data: updated } = await supabase
-            .from('profiles')
-            .update({ energy: refilled, updated_at: new Date().toISOString() })
-            .eq('id', idStr)
-            .select()
-            .single();
-          if (updated) user = updated;
+          await userRef.update({ 
+            energy: refilled, 
+            updated_at: admin.firestore.FieldValue.serverTimestamp() 
+          });
+          user.energy = refilled;
         }
       }
 
-      const { count: refCount } = await supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
+      // Get referral count
+      const refSnapshot = await fdb.collection('users').where('referred_by', '==', idStr).count().get();
+      const refCount = refSnapshot.data().count;
+
       res.json({ ...user, referralCount: refCount || 0 });
     } catch (err: any) {
-      console.error('[SYNC] Fatal Error:', err.message);
+      console.error('[SYNC] Firebase Fatal Error:', err.message);
       res.status(500).json({ error: 'Sync failed. Database might be down.' });
     }
   });
 
   // Unified Adsgram Reward
   const grantAdReward = async (id: string) => {
-    console.log(`[REWARD-SYSTEM] Processing user: ${id}`);
-    const { data: user } = await supabase.from('profiles').select('*').eq('id', id).single();
-    if (!user) return null;
+    console.log(`[REWARD-SYSTEM] Firebase processing user: ${id}`);
+    const userRef = fdb.collection('users').doc(id);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) return null;
+    const user = userDoc.data()!;
 
     const questStates = user.daily_quest_states || {};
     const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
@@ -178,24 +195,19 @@ async function startServer() {
       return null;
     }
 
-    const { data: updated } = await supabase
-      .from('profiles')
-      .update({
-        balance: (user.balance || 0) + 2500,
-        airdropRank: (user.airdropRank || 0) + 15,
-        daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
-      })
-      .eq('id', id)
-      .select()
-      .single();
+    await userRef.update({
+      balance: (user.balance || 0) + 2500,
+      airdropRank: (user.airdropRank || 0) + 15,
+      daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
+    });
     
+    const updated = (await userRef.get()).data();
     return updated;
   };
 
   app.get('/api/adsgram/reward', async (req, res) => {
-    // Making this robust for any variation of the parameter name
     const userid = req.query.userid || req.query.userId || req.query.user_id;
-    console.log(`[ADSGRAM-WEBHOOK] Ping received for user: ${userid}`);
+    console.log(`[ADSGRAM-WEBHOOK] Firebase ping received for user: ${userid}`);
     
     if (!userid) {
       console.warn('[ADSGRAM-WEBHOOK] Missing userid parameter in request');
@@ -224,13 +236,14 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const { data: user } = await supabase.from('profiles').select('*').eq('id', idStr).single();
-      if (!user) throw new Error('User not found');
+      const userRef = fdb.collection('users').doc(idStr);
+      const userDoc = await userRef.get();
+      if (!userDoc.exists) throw new Error('User not found');
+      const user = userDoc.data()!;
 
       const questStates = user.daily_quest_states || {};
       const now = new Date();
 
-      // Simple daily check
       if (questStates[questId]) {
         const last = new Date(questStates[questId]);
         if (last.toDateString() === now.toDateString()) {
@@ -238,25 +251,20 @@ async function startServer() {
         }
       }
 
-      const { data: updated, error } = await supabase
-        .from('profiles')
-        .update({
-          balance: user.balance + reward,
-          airdropRank: user.airdropRank + points,
-          daily_quest_states: { ...questStates, [questId]: now.toISOString() }
-        })
-        .eq('id', idStr)
-        .select()
-        .single();
+      await userRef.update({
+        balance: (user.balance || 0) + reward,
+        airdropRank: (user.airdropRank || 0) + points,
+        daily_quest_states: { ...questStates, [questId]: now.toISOString() }
+      });
 
-      if (error) throw error;
+      const updated = (await userRef.get()).data();
       res.json(updated);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Secure Tapping Sync (The user cannot just send any balance)
+  // Secure Tapping Sync
   app.post('/api/user/sync-taps', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, taps } = req.body;
@@ -267,39 +275,29 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      // Get current state
-      const { data: user, error: fetchError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', idStr)
-        .single();
-      
-      if (fetchError) throw fetchError;
+      const userRef = fdb.collection('users').doc(idStr);
+      const userDoc = await userRef.get();
+      if (!userDoc.exists) throw new Error('User not found');
+      const user = userDoc.data()!;
 
-      // Sanitize taps (user cannot spend more energy than they have)
       const validTaps = Math.min(taps || 0, user.energy);
       const newBalance = (user.balance || 0) + validTaps;
       const newEnergy = Math.max(0, user.energy - validTaps);
 
-      const { data, error } = await supabase
-        .from('profiles')
-        .update({ 
-          balance: newBalance, 
-          energy: newEnergy, 
-          updated_at: new Date().toISOString() 
-        })
-        .eq('id', idStr)
-        .select()
-        .single();
+      await userRef.update({ 
+        balance: newBalance, 
+        energy: newEnergy, 
+        updated_at: admin.firestore.FieldValue.serverTimestamp() 
+      });
       
-      if (error) throw error;
-      res.json(data);
+      const updated = (await userRef.get()).data();
+      res.json(updated);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Claim Passive Income (Flexible - Any Time)
+  // Claim Passive Income
   app.post('/api/user/claim', validateTelegramData, async (req, res) => {
     try {
       const { telegramId } = req.body;
@@ -308,40 +306,26 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const { data: user, error: fetchError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', telegramId.toString())
-        .single();
-
-      if (fetchError) throw fetchError;
+      const userRef = fdb.collection('users').doc(telegramId.toString());
+      const userDoc = await userRef.get();
+      if (!userDoc.exists) throw new Error('User not found');
+      const user = userDoc.data()!;
 
       const now = new Date();
-      const lastClaim = new Date(user.last_claim_at || user.created_at);
-      const diffMs = now.getTime() - lastClaim.getTime();
-      const diffSecs = diffMs / 1000;
-      
-      // Calculate earnings based on per-second rate
-      // Allow claiming at any time if earned > 0
-      const earnings = Math.floor(diffSecs * user.multiplier);
+      const lastClaim = user.last_claim_at?.toDate?.() || new Date(user.last_claim_at || user.created_at);
+      const diffSecs = (now.getTime() - lastClaim.getTime()) / 1000;
+      const earnings = Math.floor(diffSecs * (user.multiplier || 0.1));
       
       if (earnings <= 0) return res.status(400).json({ error: 'Nothing to claim yet' });
 
-      const { data: updatedUser, error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          balance: user.balance + earnings,
-          last_claim_at: now.toISOString(),
-          updated_at: now.toISOString()
-        })
-        .eq('id', telegramId.toString())
-        .select()
-        .single();
+      await userRef.update({
+        balance: (user.balance || 0) + earnings,
+        last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
 
-      if (updateError) throw updateError;
-      
-      const finalUser = updatedUser || { ...user, balance: user.balance + earnings, last_claim_at: now.toISOString() };
-      res.json({ user: finalUser, earned: earnings });
+      const updated = (await userRef.get()).data();
+      res.json({ user: updated, earned: earnings });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -350,45 +334,31 @@ async function startServer() {
   // Upgrade Developer
   app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
     try {
-      const { telegramId, developerId, cost, boost } = req.body;
+      const { telegramId, cost, boost } = req.body;
       
       if (!verifyUserMatch(req, telegramId)) {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const { data: user, error: fetchError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', telegramId.toString())
-        .single();
+      const userRef = fdb.collection('users').doc(telegramId.toString());
+      const userDoc = await userRef.get();
+      if (!userDoc.exists) throw new Error('User not found');
+      const user = userDoc.data()!;
 
-      if (fetchError) throw fetchError;
-
-      // Add a small 2-point buffer for rapid tapping sync delay
-      const effectiveBalance = user.balance + 2;
-
-      if (effectiveBalance < cost) {
+      if ((user.balance + 2) < cost) {
         return res.status(400).json({ error: 'Insufficient balance' });
       }
 
-      // Ensure we never go below 0
       const newBalance = Math.max(0, user.balance - cost);
 
-      const { data: updatedUser, error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          balance: newBalance,
-          multiplier: user.multiplier + boost,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', telegramId.toString())
-        .select()
-        .single();
+      await userRef.update({
+        balance: newBalance,
+        multiplier: (user.multiplier || 0.1) + boost,
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
 
-      if (updateError) throw updateError;
-      
-      const finalUser = updatedUser || { ...user, balance: newBalance, multiplier: user.multiplier + boost };
-      res.json(finalUser);
+      const updated = (await userRef.get()).data();
+      res.json(updated);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -401,15 +371,19 @@ async function startServer() {
       const validSorts = ['airdropRank', 'multiplier'];
       const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdropRank';
 
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id, username, first_name, airdropRank, multiplier, photo_url')
-        .order(sortColumn, { ascending: false })
-        .limit(200);
+      const snapshot = await fdb.collection('users')
+        .orderBy(sortColumn, 'desc')
+        .limit(100)
+        .get();
 
-      if (error) throw error;
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
       res.json(data);
     } catch (err: any) {
+      console.error('[LEADERBOARD] Error:', err.message);
       res.status(500).json({ error: err.message });
     }
   });
