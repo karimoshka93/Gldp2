@@ -503,10 +503,6 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
         const data = await res.json();
         if (data.id) {
           setUser(data);
-          // Only alert once
-          if (!claiming) {
-            alert(`Social Quest Complete! Reward for visiting ${m.title} added to balance.`);
-          }
         }
       } catch (err) {
         console.error("Social quest completion error:", err);
@@ -540,27 +536,24 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       if (adCount >= 10) return alert('Daily ads limit reached!');
       if (adCooldown > 0) return alert(`Please wait ${Math.floor(adCooldown/60)}m ${adCooldown%60}s for next ad`);
 
-      // Adsgram logic - Aggressive check
-      let adsgram = (window as any).Adsgram;
+      // Adsgram logic - Aggressive check with re-injection
+      const getAdsgram = () => (window as any).Adsgram;
+      const blockId = (import.meta as any).env.VITE_ADSGRAM_BLOCK_ID || "28171";
       
-      if (!adsgram) {
-        // Fallback: try to find script and re-inject if missing
-        const existing = document.querySelector('script[src*="adsgram"]');
-        if (!existing) {
-          const s = document.createElement('script');
-          s.src = "https://sad.adsgram.ai/js/adsgram-sdk.js";
-          document.head.appendChild(s);
-          return alert('Ads SDK initializing. Please wait 3 seconds and tap again.');
-        }
+      if (!getAdsgram()) {
+        const s = document.createElement('script');
+        s.src = "https://sad.adsgram.ai/js/adsgram-sdk.js";
+        s.async = true;
+        document.head.appendChild(s);
+        return alert('Ads SDK initializing. Please wait a few seconds and tap again.');
       }
 
+      const adsgram = getAdsgram();
       if (adsgram) {
         // @ts-ignore
-        const AdController = adsgram.init({ blockId: "28171" });
+        const AdController = adsgram.init({ blockId });
         AdController.show().then(async () => {
           // Success
-          alert('Ad watched successfully! Processing reward...');
-          
           try {
             const res = await fetch('/api/user/ad-reward', {
               method: 'POST',
@@ -573,17 +566,19 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
             const data = await res.json();
             if (data.id) {
               setUser(data);
-              alert('Balance updated! +2,500 GLDp');
+              alert('Ad watched! +2,500 GLDp (Reward limit: 10/day)');
             }
           } catch (err) {
             console.error("Reward error:", err);
           }
         }).catch((err: any) => {
-          console.error("Ad error:", err);
-          alert('Ad was skipped or failed to load. No reward given.');
+          console.warn("Adsgram partial completion or skip:", err);
+          if (err && err.error === 'ad_blocked') {
+            alert('Ad was blocked by your browser or device. Please disable ad-blockers to earn rewards.');
+          } else {
+            alert('Ad skipped. Watch the full ad to earn rewards!');
+          }
         });
-      } else {
-        alert('Adsgram SDK is still loading or blocked. Please try again on Telegram Mobile and wait a few seconds.');
       }
     }
   };
