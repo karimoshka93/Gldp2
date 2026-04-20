@@ -665,7 +665,11 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
                   </p>
                   <div className="flex items-center gap-3 mt-1">
                     <span className="text-[10px] font-mono text-yellow-500 font-bold">+{m.reward.toLocaleString()} GLDp</span>
-                    <span className="text-[10px] font-mono text-indigo-400 font-bold">+{m.points} POINTS</span>
+                    {claiming === m.id && m.type === 'social' ? (
+                       <span className="text-[10px] animate-pulse text-blue-400 font-black uppercase">Click Verify 👇</span>
+                    ) : (
+                       <span className="text-[10px] font-mono text-indigo-400 font-bold">+{m.points} POINTS</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -677,7 +681,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
                   {Math.floor(adCooldown/60)}m {adCooldown%60}s
                 </div>
               ) : claiming === m.id ? (
-                <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+                <div className="px-3 py-1 bg-blue-500 text-white text-[10px] font-black rounded-lg animate-bounce">VERIFY</div>
               ) : (
                 <ChevronRight className="w-5 h-5 opacity-20" />
               )}
@@ -1071,8 +1075,49 @@ export default function App() {
         
         if (!data || data.error) {
           console.warn("Sync warning:", data?.error || "Empty data");
-          // Fallback user to prevent app block
-          const fallbackUser: UserProfile = {
+          setErrorDetails(data.message || data.error);
+          
+          // Try to recover from localStorage
+          const saved = localStorage.getItem('local_user');
+          if (saved) {
+            setUser(JSON.parse(saved));
+          } else {
+            // Fallback user if all else fails
+            const fallbackUser: UserProfile = {
+              id: telegramId,
+              username: username || 'Guest',
+              first_name: first_name || 'Guest',
+              photo_url: photo_url || null,
+              airdropRank: 0,
+              balance: 0,
+              multiplier: 0.1,
+              energy: 1000,
+              last_claim_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+              daily_quest_states: {}
+            };
+            setUser(fallbackUser);
+          }
+        } else {
+          setUser(data);
+          localStorage.setItem('local_user', JSON.stringify(data));
+          
+          // Check for startParam for referrals (one-time logic)
+          if (startParam && data.id && !data.referred_by) {
+             console.log("Processing Referral for:", telegramId, "from", startParam);
+             // We could call a referral endpoint here if needed
+          }
+        }
+      } catch (err: any) {
+        console.error('Sync Fatal Error:', err.message);
+        setErrorDetails("Network error or database offline. Using local session.");
+        
+        const saved = localStorage.getItem('local_user');
+        if (saved) {
+          setUser(JSON.parse(saved));
+        } else {
+          const localUser: UserProfile = {
             id: telegramId,
             username: username || 'Guest',
             first_name: first_name || 'Guest',
@@ -1086,37 +1131,8 @@ export default function App() {
             created_at: new Date().toISOString(),
             daily_quest_states: {}
           };
-          setUser(fallbackUser);
-          if (data?.error) {
-            setErrorDetails(data.message || data.error);
-          }
-        } else if (data.id) {
-          setUser(data);
-        } else if (data.user) {
-          setUser(data.user);
-          setReferralCount(data.referralCount || 0);
-        } else {
-          setUser(data);
+          setUser(localUser);
         }
-      } catch (err: any) {
-        console.error('Sync Fatal Error:', err.message);
-        // Ensure user can still see the app if possible
-        const localUser: UserProfile = {
-          id: telegramId,
-          username: username || 'Guest',
-          first_name: first_name || 'Guest',
-          photo_url: photo_url || null,
-          airdropRank: 0,
-          balance: 0,
-          multiplier: 0.1,
-          energy: 1000,
-          last_claim_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-          daily_quest_states: {}
-        };
-        setUser(localUser);
-        setErrorDetails("Connection was interrupted, using local profile.");
       } finally {
         setLoading(false);
       }

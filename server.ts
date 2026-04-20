@@ -13,7 +13,8 @@ const PORT = 3000;
 
 // Supabase Setup
 const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
+// Use SERVICE ROLE KEY if available for security, otherwise fall back to ANON
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function startServer() {
@@ -27,283 +28,250 @@ async function startServer() {
   app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
   // Middleware to validate Telegram WebApp initData 
+  const verifyTelegramInitData = (initData: string): { id: number; username?: string } | null => {
+    if (!initData) return null;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) {
+      console.warn('TELEGRAM_BOT_TOKEN is missing. Skipping validation in development.');
+      if (process.env.NODE_ENV !== 'production') {
+        const urlParams = new URLSearchParams(initData);
+        const userStr = urlParams.get('user');
+        if (userStr) return JSON.parse(userStr);
+      }
+      return null;
+    }
+
+    try {
+      const urlParams = new URLSearchParams(initData);
+      const hash = urlParams.get('hash');
+      urlParams.delete('hash');
+
+      // Sort alphabetically
+      const dataCheckString = Array.from(urlParams.entries())
+        .map(([key, value]) => `${key}=${value}`)
+        .sort()
+        .join('\n');
+
+      const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+      const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+      if (calculatedHash === hash) {
+        const userStr = urlParams.get('user');
+        if (userStr) return JSON.parse(userStr);
+      }
+    } catch (e) {
+      console.error('Telegram Validation Error:', e);
+    }
+    return null;
+  };
+
   const validateTelegramData = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const initData = req.headers['x-telegram-init-data'] as string;
+    
+    // In dev, allow skip if no initData
     if (!initData && process.env.NODE_ENV !== 'production') {
       return next();
     }
+
+    const tgUser = verifyTelegramInitData(initData);
+    if (!tgUser) {
+      return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid Telegram Session' });
+    }
+
+    // Attach user to request for cross-verification in endpoints
+    (req as any).tgUser = tgUser;
     next();
   };
 
-  // Sync endpoint with Migration Bridge
+  // Helper to ensure the body ID matches the authenticated ID
+  const verifyUserMatch = (req: express.Request, targetId: any): boolean => {
+    const authId = (req as any).tgUser?.id?.toString();
+    if (!authId && process.env.NODE_ENV !== 'production') return true; // Skip in dev if no auth
+    return authId === targetId?.toString();
+  };
+
+  // Sync endpoint - Handles initial connection and energy refill
   app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     try {
-      const { telegramId, username, first_name } = req.body;
+      const { telegramId, username, first_name, photo_url, referred_by } = req.body;
       
-      if (!supabaseUrl || !supabaseKey) {
-        return res.status(500).json({ error: 'Supabase configuration is missing. Please add SUPABASE_URL and SUPABASE_ANON_KEY to your secrets.' });
+      if (!verifyUserMatch(req, telegramId)) {
+        return res.status(403).json({ error: 'FORBIDDEN', message: 'Identity mismatch. You can only sync your own account.' });
       }
 
-      if (!telegramId) return res.status(400).json({ error: 'telegramId is required' });
+      if (!supabaseUrl || !supabaseKey) {
+        throw new Error('Supabase configuration missing');
+      }
 
-      // 1. Check if user exists in Supabase
+      const idStr = telegramId?.toString();
+      if (!idStr) return res.status(400).json({ error: 'telegramId is required' });
+
+      // Use upsert to stay efficient and avoid "not found" errors
+      // On insert: use defaults. On update: just fetch.
       let { data: user, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', telegramId.toString())
+        .eq('id', idStr)
         .single();
 
       if (error && error.code !== 'PGRST116') {
-        if (error.message.includes("Could not find the table 'public.profiles'")) {
-          return res.status(500).json({ 
-            error: 'MISSING_TABLE', 
-            message: 'The "profiles" table was not found in your Supabase database. Please open SCHEMA_SETUP.MD in the file explorer and follow the instructions to create the table.' 
-          });
-        }
+        console.error('Supabase Fetch Error:', error);
         throw error;
       }
 
-      // 2. If not in Supabase, create a fresh profile (Fresh Start - No mandatory sync)
       if (!user) {
-        console.log(`NEW USER: ${telegramId} (${username}). Creating fresh profile...`);
-        
+        console.log(`NEW USER: ${idStr}. Creating...`);
         const { data: newUser, error: createError } = await supabase
           .from('profiles')
           .insert([{
-            id: telegramId.toString(),
+            id: idStr,
             username,
             first_name,
-            photo_url: req.body.photo_url || null,
-            airdropRank: 0,
-            balance: 0,
-            multiplier: 0.1,
-            energy: 1000,
-            referred_by: req.body.referred_by || null,
+            photo_url,
+            referred_by,
             updated_at: new Date().toISOString()
           }])
           .select()
           .single();
 
-        if (createError) throw createError;
-        if (!newUser) throw new Error('Failed to create user profile. Check Row Level Security (RLS) policies.');
+        if (createError) {
+          console.error('Create User Error:', createError);
+          throw createError;
+        }
         user = newUser;
       }
 
-      // 3. Handle Energy & Persistence for Existing Users
+      // Energy Refill (1 per sec)
       if (user) {
-        // Energy Refill Logic (1 per 1 second, max 1000)
-        const calculateEnergy = (currentEnergy: number, lastUpdate: string) => {
-          const last = new Date(lastUpdate || 0);
-          const now = new Date();
-          const diffSecs = Math.floor((now.getTime() - last.getTime()) / 1000);
-          return Math.min(1000, currentEnergy + Math.max(0, diffSecs));
-        };
+        const last = new Date(user.updated_at || user.created_at);
+        const now = new Date();
+        const diff = Math.floor((now.getTime() - last.getTime()) / 1000);
+        const refilledEnergy = Math.min(1000, user.energy + Math.max(0, diff));
 
-        const newEnergy = calculateEnergy(user.energy, user.updated_at);
-        
-        const { data: updatedUser, error: updateError } = await supabase
-          .from('profiles')
-          .update({ 
-            energy: newEnergy, 
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', telegramId.toString())
-          .select()
-          .single();
-          
-        // If update was successful but select() returned null (due to RLS), keep original user
-        if (!updateError) {
-          user = updatedUser || { ...user, energy: newEnergy };
+        if (refilledEnergy !== user.energy) {
+          const { data: updated } = await supabase
+            .from('profiles')
+            .update({ energy: refilledEnergy, updated_at: now.toISOString() })
+            .eq('id', idStr)
+            .select()
+            .single();
+          if (updated) user = updated;
         }
-      }
-
-      if (!user) {
-        return res.status(500).json({ error: 'SYNC_FAILED', message: 'No user profile data available after synchronization.' });
       }
 
       res.json(user);
     } catch (err: any) {
-      console.error('Sync Error:', err);
+      console.error('Sync Fatal:', err.message);
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Adsgram Reward Endpoint (GET as per Adsgram tooltip)
-  // Adsgram Reward handler (Legacy check - cleanup)
+  // Unified Adsgram Reward (Called by webhook or frontend)
+  const grantAdReward = async (id: string) => {
+    const { data: user } = await supabase.from('profiles').select('*').eq('id', id).single();
+    if (!user) return null;
+
+    const questStates = user.daily_quest_states || {};
+    const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
+    if (adState.count >= 10) return null;
+
+    const now = Date.now();
+    const { data: updated } = await supabase
+      .from('profiles')
+      .update({
+        balance: (user.balance || 0) + 2500,
+        airdropRank: (user.airdropRank || 0) + 15,
+        daily_quest_states: {
+          ...questStates,
+          adsgram: { count: adState.count + 1, last_ad_at: now }
+        }
+      })
+      .eq('id', id)
+      .select()
+      .single();
+    return updated;
+  };
+
   app.get('/api/adsgram/reward', async (req, res) => {
-    try {
-      const { userid } = req.query;
-      if (!userid) return res.status(400).send('Missing userid');
-
-      const { data: user, error: fetchError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userid.toString())
-        .single();
-
-      if (fetchError || !user) return res.status(404).send('User not found');
-
-      const questStates = user.daily_quest_states || {};
-      const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
-      
-      if (adState.count >= 10) return res.status(400).send('Limit reached');
-      
-      const now = Date.now();
-      const oneHour = 60 * 60 * 1000;
-      if (now - adState.last_ad_at < oneHour) return res.status(400).send('On cooldown');
-
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          balance: (user.balance || 0) + 2500,
-          airdropRank: (user.airdropRank || 0) + 15,
-          daily_quest_states: {
-            ...questStates,
-            adsgram: {
-              count: adState.count + 1,
-              last_ad_at: now
-            }
-          }
-        })
-        .eq('id', userid.toString());
-
-      if (updateError) throw updateError;
-      res.send('Reward granted');
-    } catch (err: any) {
-      res.status(500).send('Internal error');
-    }
+    const { userid } = req.query;
+    if (!userid) return res.status(400).send('missing userid');
+    const user = await grantAdReward(userid.toString());
+    res.send(user ? 'ok' : 'error');
   });
 
-  // Ad Reward handler
   app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
-    try {
-      const { telegramId } = req.body;
-      const now = new Date();
-      
-      const { data: user, error: fetchError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', telegramId.toString())
-        .single();
-      
-      if (fetchError) throw fetchError;
-
-      const questStates = user.daily_quest_states || {};
-      const adCount = questStates.ads_watched_today || 0;
-      const lastAd = questStates.last_ad_at ? new Date(questStates.last_ad_at) : new Date(0);
-      
-      // Cooldown check (1 hour)
-      const diffMs = now.getTime() - lastAd.getTime();
-      if (diffMs < 3600000 && adCount > 0) {
-        return res.status(400).json({ error: 'Ad is on cooldown' });
-      }
-
-      if (adCount >= 10) {
-        return res.status(400).json({ error: 'Daily limit reached' });
-      }
-
-      const { data: updatedUser, error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          balance: user.balance + 2500,
-          airdropRank: user.airdropRank + 15,
-          daily_quest_states: {
-            ...questStates,
-            ads_watched_today: adCount + 1,
-            last_ad_at: now.toISOString()
-          }
-        })
-        .eq('id', telegramId.toString())
-        .select()
-        .single();
-
-      if (updateError) throw updateError;
-      res.json(updatedUser);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
+    const { telegramId } = req.body;
+    const user = await grantAdReward(telegramId.toString());
+    if (user) res.json(user);
+    else res.status(400).json({ error: 'Reward failed or limit reached' });
   });
 
-  // Admin / Adsgram Webhook (Optional but good for security)
-  app.get('/api/adsgram/reward', async (req, res) => {
-    try {
-      const { userid } = req.query;
-      if (!userid) return res.status(400).send('Missing userid');
-      
-      // We'll trust this for now as it's a dev build
-      // In production, you would verify the Adsgram signature
-      const { data: user } = await supabase.from('profiles').select('*').eq('id', userid.toString()).single();
-      if (user) {
-         await supabase.from('profiles').update({
-           balance: user.balance + 2500,
-           airdropRank: user.airdropRank + 15
-         }).eq('id', userid.toString());
-      }
-      res.send('ok');
-    } catch (e) {
-      res.status(500).send('error');
-    }
-  });
+  // Quest Completion
   app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, questId, reward, points } = req.body;
-      
-      const { data: user, error: fetchError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', telegramId.toString())
-        .single();
+      const idStr = telegramId.toString();
 
-      if (fetchError) throw fetchError;
+      if (!verifyUserMatch(req, telegramId)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
 
-      const now = new Date();
+      const { data: user } = await supabase.from('profiles').select('*').eq('id', idStr).single();
+      if (!user) throw new Error('User not found');
+
       const questStates = user.daily_quest_states || {};
-      
-      // Check if already completed today
+      const now = new Date();
+
+      // Simple daily check
       if (questStates[questId]) {
-        if (typeof questStates[questId] === 'string') {
-           const lastDone = new Date(questStates[questId]);
-           if (lastDone.toDateString() === now.toDateString()) {
-             return res.status(400).json({ error: 'Already completed today' });
-           }
+        const last = new Date(questStates[questId]);
+        if (last.toDateString() === now.toDateString()) {
+          return res.status(400).json({ error: 'Already done today' });
         }
       }
 
-      const { data: updatedUser, error: updateError } = await supabase
+      const { data: updated, error } = await supabase
         .from('profiles')
         .update({
           balance: user.balance + reward,
           airdropRank: user.airdropRank + points,
-          daily_quest_states: {
-            ...questStates,
-            [questId]: now.toISOString()
-          }
+          daily_quest_states: { ...questStates, [questId]: now.toISOString() }
         })
-        .eq('id', telegramId.toString())
+        .eq('id', idStr)
         .select()
         .single();
 
-      if (updateError) throw updateError;
-      res.json(updatedUser);
+      if (error) throw error;
+      res.json(updated);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Sync Balance (Aggressive Save)
+  // Aggressive Balance Sync
   app.post('/api/user/sync-balance', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, balance, energy } = req.body;
+      const idStr = telegramId?.toString();
+      if (!idStr) return res.status(400).json({ error: 'missing id' });
+
+      if (!verifyUserMatch(req, telegramId)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
+
       const { data, error } = await supabase
         .from('profiles')
         .update({ balance, energy, updated_at: new Date().toISOString() })
-        .eq('id', telegramId.toString())
+        .eq('id', idStr)
         .select()
         .single();
       
-      if (error) throw error;
-      const finalUser = data || { id: telegramId.toString(), balance, energy };
-      res.json(finalUser);
+      if (error) {
+        // If user doesn't exist, we don't throw, we just return current state
+        if (error.code === 'PGRST116') return res.json({ id: idStr, balance, energy });
+        throw error;
+      }
+      res.json(data);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -314,6 +282,10 @@ async function startServer() {
     try {
       const { telegramId } = req.body;
       
+      if (!verifyUserMatch(req, telegramId)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
+
       const { data: user, error: fetchError } = await supabase
         .from('profiles')
         .select('*')
@@ -358,6 +330,10 @@ async function startServer() {
     try {
       const { telegramId, developerId, cost, boost } = req.body;
       
+      if (!verifyUserMatch(req, telegramId)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
+
       const { data: user, error: fetchError } = await supabase
         .from('profiles')
         .select('*')
