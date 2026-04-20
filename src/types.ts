@@ -7,6 +7,8 @@ export interface UserProfile {
   balance: number; 
   multiplier: number; 
   energy: number;
+  tap_value?: number;
+  daily_taps?: number;
   referred_by?: string;
   last_claim_at: string;
   daily_quest_states: Record<string, any>;

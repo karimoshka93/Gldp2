@@ -145,7 +145,8 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
     setUser((prev: UserProfile | null) => {
       if (!prev || prev.energy <= 0) return prev;
       
-      const newBalance = (prev.balance || 0) + 1;
+      const tapValueNum = prev.tap_value || 1;
+      const newBalance = (prev.balance || 0) + tapValueNum;
       const newEnergy = Math.max(0, prev.energy - 1);
       
       // Update tap visual separately
@@ -164,20 +165,7 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
     }, 800);
   };
 
-  // Client-side visual energy refill (1 per sec)
-  useEffect(() => {
-    const energyInterval = setInterval(() => {
-      const lastUpdateRaw = user.updated_at as any;
-      const lastUpdate = (lastUpdateRaw && typeof lastUpdateRaw === 'object' && '_seconds' in lastUpdateRaw)
-        ? new Date(lastUpdateRaw._seconds * 1000)
-        : new Date(lastUpdateRaw || Date.now());
-      
-      if (user && user.energy < 1000) {
-        setUser((prev: UserProfile | null) => prev ? { ...prev, energy: Math.min(1000, prev.energy + 1) } : null);
-      }
-    }, 1000);
-    return () => clearInterval(energyInterval);
-  }, [user?.energy]);
+  // Energy is now fixed daily taps - no client-side refill needed
 
   // Sync tapValue if user.balance changes externally (e.g. claim or from server update)
   useEffect(() => {
@@ -227,7 +215,7 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
             className="fixed pointer-events-none text-3xl font-black gold-gradient z-50 select-none"
             style={{ left: t.x - 10 }}
           >
-            +1
+            +{user.tap_value || 1}
           </motion.div>
         ))}
       </AnimatePresence>
@@ -282,15 +270,15 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
         <div className="glass-card p-4 border-white/5 bg-[#1e293b]/50">
           <div className="flex items-center gap-2 mb-2">
             <Zap className="w-4 h-4 text-yellow-400 fill-yellow-400" />
-            <span className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">Energy Supply</span>
+            <span className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">Daily Taps Left</span>
           </div>
           <div className="flex items-end justify-between">
-            <p className="text-xl font-black text-white">{user.energy}<span className="text-[10px] text-neutral-500 ml-1">/1000</span></p>
+            <p className="text-xl font-black text-white">{user.energy}<span className="text-[10px] text-neutral-500 ml-1">/100</span></p>
           </div>
           <div className="w-full h-1.5 bg-white/5 rounded-full mt-3 overflow-hidden border border-white/5">
             <motion.div 
               initial={{ width: 0 }}
-              animate={{ width: `${(user.energy / 1000) * 100}%` }}
+              animate={{ width: `${(user.energy / 100) * 100}%` }}
               className="h-full bg-gradient-to-r from-yellow-400 to-amber-600 shadow-[0_0_10px_rgba(234,179,8,0.4)]" 
             />
           </div>
@@ -348,6 +336,18 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
 const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, syncBalance: (b: number, e: number) => Promise<void> }) => {
   const devIcons = [Cpu, Globe, Database, Terminal, Shield, Workflow, Layers, Server, Code, HardDrive];
   
+  const tapUpgrade: DeveloperCard = {
+    id: 'tap-master',
+    name: "Master Systems Architect",
+    description: "Core logic optimization. Increases value per tap.",
+    base_cost: Math.floor(5000 * Math.pow(2.5, (user.upgrades?.['tap-master'] || 0))),
+    base_boost: 1,
+    multiplier_per_hour: 0,
+    image_url: ''
+  };
+
+  const currentTapValue = user.tap_value || 1;
+
   const devs: DeveloperCard[] = Array.from({ length: 30 }, (_, i) => {
     const id = `dev-${i+1}`;
     const level = user.upgrades?.[id] || 0;
@@ -366,9 +366,10 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
     };
   });
 
-  const handleUpgrade = async (dev: DeveloperCard) => {
+  const handleUpgrade = async (dev: DeveloperCard, isTap = false) => {
     try {
       if (user.balance < dev.base_cost) return alert("Insufficient GLDp!");
+      if (isTap && currentTapValue >= 100) return alert("Max tap performance reached!");
       
       const res = await fetch('/api/user/upgrade', {
         method: 'POST',
@@ -380,13 +381,14 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
           telegramId: user.id, 
           developerId: dev.id,
           cost: dev.base_cost,
-          boost: dev.base_boost
+          boost: dev.base_boost,
+          upgradeType: isTap ? 'tap' : 'income'
         })
       });
       const data = await res.json();
       if (data.id) {
         setUser(data);
-        alert(`Successfully hired ${dev.name}! Level is now ${data.upgrades?.[dev.id] || 1}`);
+        alert(`Successfully upgraded! Level is now ${data.upgrades?.[dev.id] || 1}`);
       } else {
         alert(data.error || 'Upgrade failed');
       }
@@ -400,6 +402,35 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
       <div className="pt-6">
         <h2 className="text-3xl font-black gold-gradient uppercase tracking-tight">Building Roster</h2>
         <p className="text-[10px] text-neutral-500 uppercase font-black tracking-widest mt-1">Acquire top talent for hourly earnings</p>
+      </div>
+
+      {/* Special Tap Upgrade Card */}
+      <div className="glass-card p-5 flex items-center justify-between group bg-yellow-500/10 border-yellow-500/30 active:bg-yellow-500/20 shadow-2xl shadow-yellow-500/5">
+        <div className="flex items-center gap-4">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-yellow-500/30 to-amber-500/30 flex items-center justify-center border border-yellow-500/40 shrink-0">
+             <Zap className="w-8 h-8 text-yellow-500" />
+          </div>
+          <div>
+            <p className="font-black text-sm text-white">{tapUpgrade.name}</p>
+            <p className="text-[10px] text-neutral-500 leading-tight mb-2">{tapUpgrade.description}</p>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-black text-yellow-500">Current: {currentTapValue} GLDp / Tap</span>
+            </div>
+          </div>
+        </div>
+        <button 
+          onClick={() => handleUpgrade(tapUpgrade, true)}
+          disabled={currentTapValue >= 100}
+          className="flex flex-col items-end gap-1"
+        >
+          <div className={cn(
+            "px-4 py-2 rounded-xl font-black text-xs shadow-lg transition-all",
+            currentTapValue >= 100 ? "bg-neutral-800 text-neutral-600 grayscale" : "bg-yellow-500 text-black shadow-yellow-500/20 active:scale-95"
+          )}>
+            {currentTapValue >= 100 ? "MAXED" : tapUpgrade.base_cost.toLocaleString()}
+          </div>
+          <span className="text-[8px] uppercase font-bold text-neutral-500 tracking-tighter">PERFORMANCE</span>
+        </button>
       </div>
       
       {devs.map((dev, i) => {
@@ -835,25 +866,24 @@ const ProfilePage = ({ user, referralCount, setUser, errorDetails }: { user: Use
 };
 const RankingTab = ({ user }: { user: UserProfile }) => {
   const [leaders, setLeaders] = useState<any[]>([]);
+  const [userRank, setUserRank] = useState(0);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState('airdropRank');
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/api/leaderboard?sortBy=${sortBy}`)
+    fetch(`/api/leaderboard?sortBy=${sortBy}&userId=${user.id}`)
       .then(res => res.json())
       .then(data => {
-        setLeaders(data || []);
+        setLeaders(data.top20 || []);
+        setUserRank(data.userRank || 0);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [sortBy]);
-
-  // Find current user position
-  const userRank = leaders.findIndex(l => l.id === user.id) + 1;
+  }, [sortBy, user.id]);
 
   const top3 = leaders.slice(0, 3);
-  const rest = leaders.slice(3, 100);
+  const rest = leaders.slice(3, 20);
 
   const getMetric = (l: any) => {
     if (sortBy === 'multiplier') return `+${Math.floor(l.multiplier * 3600)}/h`;
@@ -868,8 +898,14 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
           <div className="p-2 bg-yellow-500/10 rounded-lg">
              <Trophy className="w-5 h-5 text-yellow-500" />
           </div>
-          <div>
-            <p className="text-[10px] text-neutral-500 uppercase font-black tracking-widest mb-1">Growth Intelligence</p>
+          <div className="flex-1">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] text-neutral-500 uppercase font-black tracking-widest mb-1">Growth Intelligence</p>
+              <div className="flex items-center gap-1 text-[8px] text-yellow-500/50 font-bold uppercase">
+                <Clock className="w-2 h-2" />
+                Updates every 15m
+              </div>
+            </div>
             <p className="text-xs text-white/80 leading-relaxed">
               Ascend ranks by completing <span className="text-yellow-500 font-bold">Quests</span>. Increase your hourly dividends by acquiring <span className="text-indigo-400 font-bold">Dev Personnel</span> in the roster.
             </p>

@@ -85,6 +85,9 @@ const verifyUserMatch = (req: express.Request, targetId: any): boolean => {
 
 // --- API Routes ---
 
+// Global cache for leaderboard to save quotas
+const leaderboardCaches: Record<string, { data: any[], expires: number }> = {};
+
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 app.post('/api/user/sync', validateTelegramData, async (req, res) => {
@@ -121,10 +124,12 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
         first_name: first_name || '',
         photo_url: photo_url || null,
         referred_by: referred_by || null,
-        balance: referred_by ? 5000 : 0, // 5k bonus for being referred
+        balance: referred_by ? 5000 : 0, 
         multiplier: 0.1,
+        tap_value: 1,
+        daily_taps: 0,
         airdropRank: 0,
-        energy: 1000,
+        energy: 100, // ENERGY IS NOW "DAILY TAPS LEFT"
         daily_quest_states: {},
         completed_missions: [],
         upgrades: {},
@@ -134,13 +139,19 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
       };
       await userRef.set(user);
     } else {
-      // Energy refill
+      // Reset daily taps if it's a new day
       const lastUpdate = user.updated_at?.toDate?.() || new Date(user.updated_at);
-      const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
-      const refilled = Math.min(1000, (user.energy || 0) + Math.max(0, diffSecs));
-      if (refilled !== user.energy) {
-        await userRef.update({ energy: refilled, updated_at: admin.firestore.FieldValue.serverTimestamp() });
-        user.energy = refilled;
+      const today = new Date().toDateString();
+      const lastDate = lastUpdate.toDateString();
+
+      if (today !== lastDate) {
+        await userRef.update({
+          daily_taps: 0,
+          energy: 100, // Reset to 100 taps available
+          updated_at: admin.firestore.FieldValue.serverTimestamp()
+        });
+        user.daily_taps = 0;
+        user.energy = 100;
       }
     }
 
@@ -186,10 +197,24 @@ app.post('/api/user/sync-taps', validateTelegramData, async (req, res) => {
     const userDoc = await userRef.get();
     if (!userDoc.exists) throw new Error('User not found');
     const user = userDoc.data()!;
-    const validTaps = Math.min(taps || 0, user.energy);
+
+    // Calculate how many taps can still be done
+    const dailyLimit = 100;
+    const currentDaily = user.daily_taps || 0;
+    const available = Math.max(0, dailyLimit - currentDaily);
+    const actualTaps = Math.min(taps || 0, available);
+
+    if (actualTaps <= 0 && taps > 0) {
+      return res.json(user);
+    }
+
+    const tapValue = user.tap_value || 1;
+    const reward = actualTaps * tapValue;
+
     await userRef.update({ 
-      balance: (user.balance || 0) + validTaps, 
-      energy: Math.max(0, user.energy - validTaps), 
+      balance: (user.balance || 0) + reward, 
+      energy: Math.max(0, available - actualTaps), 
+      daily_taps: currentDaily + actualTaps,
       updated_at: admin.firestore.FieldValue.serverTimestamp() 
     });
     res.json((await userRef.get()).data());
@@ -267,7 +292,7 @@ app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
 
 app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
   try {
-    const { telegramId, developerId, cost, boost } = req.body;
+    const { telegramId, developerId, cost, boost, upgradeType = 'income' } = req.body;
     if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
     const userRef = fdb.collection('users').doc(telegramId.toString());
@@ -282,13 +307,21 @@ app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
     const upgrades = user.upgrades || {};
     const nextLevel = (upgrades[developerId] || 0) + 1;
 
-    await userRef.update({
-      balance: (user.balance || 0) - cost,
-      multiplier: (user.multiplier || 0.1) + boost,
+    const updateData: any = {
+      balance: admin.firestore.FieldValue.increment(-cost),
       [`upgrades.${developerId}`]: nextLevel,
       updated_at: admin.firestore.FieldValue.serverTimestamp()
-    });
+    };
 
+    if (upgradeType === 'tap') {
+      const currentTap = user.tap_value || 1;
+      if (currentTap >= 100) return res.status(400).json({ error: 'Max level reached' });
+      updateData.tap_value = admin.firestore.FieldValue.increment(boost);
+    } else {
+      updateData.multiplier = admin.firestore.FieldValue.increment(boost);
+    }
+
+    await userRef.update(updateData);
     res.json((await userRef.get()).data());
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -297,12 +330,42 @@ app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    const { sortBy = 'airdropRank' } = req.query;
+    const { sortBy = 'airdropRank', userId } = req.query;
     const validSorts = ['airdropRank', 'multiplier', 'balance'];
     const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdropRank';
 
-    const snapshot = await fdb.collection('users').orderBy(sortColumn, 'desc').limit(100).get();
-    res.json(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const cacheKey = `${sortColumn}`;
+    const now = Date.now();
+    
+    // Cache logic
+    if (!leaderboardCaches[cacheKey] || now > leaderboardCaches[cacheKey].expires) {
+      const snapshot = await fdb.collection('users')
+        .orderBy(sortColumn, 'desc')
+        .limit(20)
+        .get();
+
+      leaderboardCaches[cacheKey] = {
+        data: snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+        expires: now + (15 * 60 * 1000)
+      };
+    }
+
+    let userRank = 0;
+    if (userId) {
+      const userDoc = await fdb.collection('users').doc(userId.toString()).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data()!;
+        const userValue = userData[sortColumn] || 0;
+        const rankSnapshot = await fdb.collection('users').where(sortColumn, '>', userValue).count().get();
+        userRank = rankSnapshot.data().count + 1;
+      }
+    }
+
+    res.json({ 
+      top20: leaderboardCaches[cacheKey].data, 
+      userRank, 
+      lastUpdate: leaderboardCaches[cacheKey].expires - (15 * 60 * 1000) 
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

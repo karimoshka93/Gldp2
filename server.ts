@@ -27,6 +27,9 @@ admin.initializeApp({
 // Correct way to get Firestore instance for a specific database ID in firebase-admin v13+
 const fdb = firebaseConfig.firestoreDatabaseId ? getFirestore(firebaseConfig.firestoreDatabaseId) : getFirestore();
 
+// Global cache for leaderboard to save quotas
+const leaderboardCaches: Record<string, { data: any[], expires: number }> = {};
+
 async function startServer() {
   const app = express();
   app.use(express.json());
@@ -149,10 +152,12 @@ async function startServer() {
           first_name: first_name || '',
           photo_url: photo_url || null,
           referred_by: referred_by || null,
-          balance: referred_by ? 5000 : 0, // 5k bonus for being referred
+          balance: referred_by ? 5000 : 0, 
           multiplier: 0.1,
+          tap_value: 1, // Default tap value
+          daily_taps: 0, // Count of taps today
           airdropRank: 0,
-          energy: 1000,
+          energy: 100, // ENERGY IS NOW "DAILY TAPS LEFT"
           daily_quest_states: {},
           completed_missions: [],
           upgrades: {},
@@ -164,18 +169,21 @@ async function startServer() {
         user = newUser;
       }
 
-      // Energy calculation logic remains robust...
+      // Reset daily taps if it's a new day
       if (user) {
         const lastUpdate = user.updated_at?.toDate?.() || new Date(user.updated_at);
-        const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
-        const refilled = Math.min(1000, (user.energy || 0) + Math.max(0, diffSecs));
+        const today = new Date().toDateString();
+        const lastDate = lastUpdate.toDateString();
 
-        if (refilled !== user.energy) {
-          await userRef.update({ 
-            energy: refilled, 
-            updated_at: admin.firestore.FieldValue.serverTimestamp() 
+        if (today !== lastDate) {
+          // New day - reset taps and energy
+          await userRef.update({
+            daily_taps: 0,
+            energy: 100, // Reset to 100 taps available
+            updated_at: admin.firestore.FieldValue.serverTimestamp()
           });
-          user.energy = refilled;
+          user.daily_taps = 0;
+          user.energy = 100;
         }
       }
 
@@ -298,13 +306,23 @@ async function startServer() {
       if (!userDoc.exists) throw new Error('User not found');
       const user = userDoc.data()!;
 
-      const validTaps = Math.min(taps || 0, user.energy);
-      const newBalance = (user.balance || 0) + validTaps;
-      const newEnergy = Math.max(0, user.energy - validTaps);
+      // Calculate how many taps can still be done
+      const dailyLimit = 100;
+      const currentDaily = user.daily_taps || 0;
+      const available = Math.max(0, dailyLimit - currentDaily);
+      const actualTaps = Math.min(taps || 0, available);
+
+      if (actualTaps <= 0 && taps > 0) {
+        return res.json(user);
+      }
+
+      const tapValue = user.tap_value || 1;
+      const reward = actualTaps * tapValue;
 
       await userRef.update({ 
-        balance: newBalance, 
-        energy: newEnergy, 
+        balance: (user.balance || 0) + reward, 
+        energy: Math.max(0, available - actualTaps), // "Energy" is now daily taps left
+        daily_taps: currentDaily + actualTaps,
         updated_at: admin.firestore.FieldValue.serverTimestamp() 
       });
       
@@ -352,7 +370,7 @@ async function startServer() {
   // Upgrade Developer
   app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
     try {
-      const { telegramId, developerId, cost, boost } = req.body;
+      const { telegramId, developerId, cost, boost, upgradeType = 'income' } = req.body;
       
       if (!verifyUserMatch(req, telegramId)) {
         return res.status(403).json({ error: 'FORBIDDEN' });
@@ -370,12 +388,21 @@ async function startServer() {
       const upgrades = user.upgrades || {};
       const nextLevel = (upgrades[developerId] || 0) + 1;
 
-      await userRef.update({
-        balance: (user.balance || 0) - cost,
-        multiplier: (user.multiplier || 0.1) + boost,
+      const updateData: any = {
+        balance: admin.firestore.FieldValue.increment(-cost),
         [`upgrades.${developerId}`]: nextLevel,
         updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
+      };
+
+      if (upgradeType === 'tap') {
+        const currentTap = user.tap_value || 1;
+        if (currentTap >= 100) return res.status(400).json({ error: 'Maximum Tap Performance Reached' });
+        updateData.tap_value = admin.firestore.FieldValue.increment(boost);
+      } else {
+        updateData.multiplier = admin.firestore.FieldValue.increment(boost);
+      }
+
+      await userRef.update(updateData);
 
       const updated = (await userRef.get()).data();
       res.json(updated);
@@ -384,26 +411,55 @@ async function startServer() {
     }
   });
 
-  // Leaderboard
+  // Leaderboard with 15m Cache & Top 20 Limit
   app.get('/api/leaderboard', async (req, res) => {
     try {
-      const { sortBy = 'airdropRank' } = req.query;
+      const { sortBy = 'airdropRank', userId } = req.query;
       const validSorts = ['airdropRank', 'multiplier', 'balance'];
       const sortColumn = validSorts.includes(sortBy as string) ? sortBy as string : 'airdropRank';
 
-      console.log(`[LEADERBOARD] Fetching sorted by ${sortColumn} DESC`);
+      const cacheKey = `${sortColumn}`;
+      const now = Date.now();
+      
+      // Cache logic
+      if (!leaderboardCaches[cacheKey] || now > leaderboardCaches[cacheKey].expires) {
+        console.log(`[LEADERBOARD] Refreshing Cache for ${sortColumn}`);
+        const snapshot = await fdb.collection('users')
+          .orderBy(sortColumn, 'desc')
+          .limit(20)
+          .get();
 
-      const snapshot = await fdb.collection('users')
-        .orderBy(sortColumn, 'desc')
-        .limit(100)
-        .get();
+        leaderboardCaches[cacheKey] = {
+          data: snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+          expires: now + (15 * 60 * 1000)
+        };
+      }
 
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      let data = [...leaderboardCaches[cacheKey].data];
+      let userRank = 0;
 
-      res.json(data);
+      // If user provides their ID, we fetch their specific rank efficiency
+      if (userId) {
+        const userDoc = await fdb.collection('users').doc(userId.toString()).get();
+        if (userDoc.exists) {
+          const userData = userDoc.data()!;
+          const userValue = userData[sortColumn] || 0;
+          
+          // Get rank by counting users with higher value
+          const rankSnapshot = await fdb.collection('users')
+            .where(sortColumn, '>', userValue)
+            .count()
+            .get();
+          
+          userRank = rankSnapshot.data().count + 1;
+        }
+      }
+
+      res.json({ 
+        top20: data, 
+        userRank, 
+        lastUpdate: leaderboardCaches[cacheKey].expires - (15 * 60 * 1000) 
+      });
     } catch (err: any) {
       console.error('[LEADERBOARD] Fatal Error:', err.message);
       res.status(500).json({ error: err.message });
