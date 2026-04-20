@@ -106,12 +106,12 @@ const Header = ({ user, setActiveTab }: { user: UserProfile | null, setActiveTab
   </header>
 );
 
-const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, syncBalance: (b: number, e: number) => Promise<void> }) => {
+const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>>, syncBalance: (b: number, e: number) => Promise<void>, onTapBatch: (taps: number) => void }) => {
   const [tapValue, setTapValue] = useState(user.balance);
   const [floatingTexts, setFloatingTexts] = useState<{ id: number, x: number, y: number }[]>([]);
-  const tapCooldownRef = useRef<NodeJS.Timeout | null>(null);
   const [accumulated, setAccumulated] = useState(0);
   const [timeLeft, setTimeLeft] = useState(14400); // 4 hours in seconds
+  const [pendingTaps, setPendingTaps] = useState(0);
 
   // Live calculation of accumulated passive income
   useEffect(() => {
@@ -145,10 +145,8 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: R
       // Update tap visual separately
       setTapValue(newBalance);
 
-      if (tapCooldownRef.current) clearTimeout(tapCooldownRef.current);
-      tapCooldownRef.current = setTimeout(() => {
-        syncBalance(newBalance, newEnergy);
-      }, 1500);
+      // Add to pending batch
+      onTapBatch(1);
 
       return { ...prev, balance: newBalance, energy: newEnergy };
     });
@@ -170,13 +168,9 @@ const HomeTab = ({ user, setUser, syncBalance }: { user: UserProfile, setUser: R
     return () => clearInterval(energyInterval);
   }, [user?.energy]);
 
-  // Sync tapValue if user.balance changes externally (e.g. claim)
+  // Sync tapValue if user.balance changes externally (e.g. claim or from server update)
   useEffect(() => {
-    // Only update if the difference is significant (passive income vs tapping)
-    // or if we are not actively tapping (cooldown is null)
-    if (!tapCooldownRef.current) {
-        setTapValue(user.balance);
-    }
+      setTapValue(user.balance);
   }, [user.balance]);
 
   const handleClaim = async () => {
@@ -1026,26 +1020,56 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
-  const syncBalance = async (newBalance: number, newEnergy: number) => {
+  const [tapsToSync, setTapsToSync] = useState(0);
+  const tapsToSyncRef = useRef(0);
+
+  const syncTaps = async () => {
+    const tapsInThisBatch = tapsToSyncRef.current;
+    if (tapsInThisBatch <= 0) return;
+    
+    // Reset the ref immediately to avoid double counting if another batch starts
+    tapsToSyncRef.current = 0;
+    setTapsToSync(0);
+
     try {
-      await fetch('/api/user/sync-balance', {
+      const res = await fetch('/api/user/sync-taps', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
         },
-        body: JSON.stringify({ telegramId: user?.id, balance: newBalance, energy: newEnergy })
+        body: JSON.stringify({ telegramId: user?.id, taps: tapsInThisBatch })
       });
+      const data = await res.json();
+      if (data.id) {
+        setUser(data);
+      }
     } catch (err) {
-      console.error("Critical Sync Error:", err);
+      console.error("Critical Tap Sync Error:", err);
+      // If sync fails, we might want to put them back in the queue, 
+      // but that risks double counting if the server actually processed it.
+      // For now, we trust the server is up.
     }
+  };
+
+  const handleManualTapSync = async (tapsCount: number) => {
+      tapsToSyncRef.current += tapsCount;
+      setTapsToSync(prev => prev + tapsCount);
+
+      if (tapCooldownRef.current) clearTimeout(tapCooldownRef.current);
+      tapCooldownRef.current = setTimeout(() => {
+          syncTaps();
+      }, 1500);
   };
 
   useEffect(() => {
     // Initial Sync
     const sync = async () => {
       const tg = window.Telegram?.WebApp;
-      if (tg) tg.ready();
+      if (tg) {
+        tg.ready();
+        tg.expand(); // Good practice to expand on startup
+      }
 
       const tgUser = tg?.initDataUnsafe?.user;
       const telegramId = tgUser?.id?.toString() || '12345';
@@ -1053,6 +1077,8 @@ export default function App() {
       const first_name = tgUser?.first_name || 'Mock';
       const photo_url = tgUser?.photo_url || null;
       
+      console.log("[FRONTEND] Starting sync for ID:", telegramId);
+
       try {
         const startParam = tg?.initDataUnsafe?.start_param; 
         
@@ -1074,16 +1100,15 @@ export default function App() {
         const data = await res.json();
         
         if (!data || data.error) {
-          console.warn("Sync warning:", data?.error || "Empty data");
+          console.warn("[FRONTEND] Sync warning:", data?.error || "Empty data");
           setErrorDetails(data.message || data.error);
           
-          // Try to recover from localStorage
           const saved = localStorage.getItem('local_user');
           if (saved) {
-            setUser(JSON.parse(saved));
+            const parsed = JSON.parse(saved);
+            setUser(parsed);
           } else {
-            // Fallback user if all else fails
-            const fallbackUser: UserProfile = {
+            setUser({
               id: telegramId,
               username: username || 'Guest',
               first_name: first_name || 'Guest',
@@ -1096,43 +1121,20 @@ export default function App() {
               updated_at: new Date().toISOString(),
               created_at: new Date().toISOString(),
               daily_quest_states: {}
-            };
-            setUser(fallbackUser);
+            });
           }
         } else {
           setUser(data);
+          setReferralCount(data.referralCount || 0);
           localStorage.setItem('local_user', JSON.stringify(data));
-          
-          // Check for startParam for referrals (one-time logic)
-          if (startParam && data.id && !data.referred_by) {
-             console.log("Processing Referral for:", telegramId, "from", startParam);
-             // We could call a referral endpoint here if needed
-          }
+          console.log("[FRONTEND] Sync Successful. Referral Count:", data.referralCount);
         }
       } catch (err: any) {
-        console.error('Sync Fatal Error:', err.message);
-        setErrorDetails("Network error or database offline. Using local session.");
+        console.error('[FRONTEND] Sync Fatal Error:', err.message);
+        setErrorDetails(`Sync error: ${err.message}. Please restart app.`);
         
         const saved = localStorage.getItem('local_user');
-        if (saved) {
-          setUser(JSON.parse(saved));
-        } else {
-          const localUser: UserProfile = {
-            id: telegramId,
-            username: username || 'Guest',
-            first_name: first_name || 'Guest',
-            photo_url: photo_url || null,
-            airdropRank: 0,
-            balance: 0,
-            multiplier: 0.1,
-            energy: 1000,
-            last_claim_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            created_at: new Date().toISOString(),
-            daily_quest_states: {}
-          };
-          setUser(localUser);
-        }
+        if (saved) setUser(JSON.parse(saved));
       } finally {
         setLoading(false);
       }
@@ -1141,12 +1143,14 @@ export default function App() {
     sync();
   }, []);
 
+  const tapCooldownRef = useRef<NodeJS.Timeout | null>(null);
+
   if (loading) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-[#0f172a]">
         <div className="text-center space-y-4">
           <div className="w-16 h-16 border-4 border-[#facc15] border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs uppercase font-black tracking-[0.3em] font-mono gold-gradient">Sychronizing GLD Network...</p>
+          <p className="text-xs uppercase font-black tracking-[0.3em] font-mono gold-gradient">GLD Network Synchronizing...</p>
         </div>
       </div>
     );
@@ -1166,8 +1170,21 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.2 }}
             >
-              {activeTab === 'home' && user && <HomeTab user={user} setUser={setUser} syncBalance={syncBalance} />}
-              {activeTab === 'developers' && user && <DevelopersTab user={user} setUser={setUser} syncBalance={syncBalance} />}
+              {activeTab === 'home' && user && (
+                <HomeTab 
+                  user={user} 
+                  setUser={setUser} 
+                  syncBalance={async () => { /* legacy prop placeholder */ }} 
+                  onTapBatch={handleManualTapSync} 
+                />
+              )}
+              {activeTab === 'developers' && user && (
+                <DevelopersTab 
+                  user={user} 
+                  setUser={setUser} 
+                  syncBalance={syncTaps} // We reuse the sync for upgrades too
+                />
+              )}
               {activeTab === 'missions' && user && <MissionsTab user={user} referralCount={referralCount} setUser={setUser} />}
               {activeTab === 'ranking' && user && <RankingTab user={user} />}
               {activeTab === 'wallet' && <WalletTab />}

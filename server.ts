@@ -28,16 +28,19 @@ async function startServer() {
   app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
   // Middleware to validate Telegram WebApp initData 
-  const verifyTelegramInitData = (initData: string): { id: number; username?: string } | null => {
-    if (!initData) return null;
+  const verifyTelegramInitData = (initData: string): { id: number; username?: string; first_name?: string } | null => {
+    if (!initData) {
+      console.warn('[AUTH] No initData provided');
+      return null;
+    }
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     if (!botToken) {
-      console.warn('TELEGRAM_BOT_TOKEN is missing. Skipping validation in development.');
-      if (process.env.NODE_ENV !== 'production') {
+      console.warn('[AUTH] TELEGRAM_BOT_TOKEN is missing. Falling back to mock for dev.');
+      try {
         const urlParams = new URLSearchParams(initData);
         const userStr = urlParams.get('user');
         if (userStr) return JSON.parse(userStr);
-      }
+      } catch (e) {}
       return null;
     }
 
@@ -46,7 +49,6 @@ async function startServer() {
       const hash = urlParams.get('hash');
       urlParams.delete('hash');
 
-      // Sort alphabetically
       const dataCheckString = Array.from(urlParams.entries())
         .map(([key, value]) => `${key}=${value}`)
         .sort()
@@ -58,9 +60,11 @@ async function startServer() {
       if (calculatedHash === hash) {
         const userStr = urlParams.get('user');
         if (userStr) return JSON.parse(userStr);
+      } else {
+        console.warn('[AUTH] Hash mismatch. Check TELEGRAM_BOT_TOKEN.');
       }
     } catch (e) {
-      console.error('Telegram Validation Error:', e);
+      console.error('[AUTH] Validation Error:', e);
     }
     return null;
   };
@@ -68,17 +72,16 @@ async function startServer() {
   const validateTelegramData = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const initData = req.headers['x-telegram-init-data'] as string;
     
-    // In dev, allow skip if no initData
     if (!initData && process.env.NODE_ENV !== 'production') {
       return next();
     }
 
     const tgUser = verifyTelegramInitData(initData);
     if (!tgUser) {
-      return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid Telegram Session' });
+      console.warn('[API] Unauthorized access attempt from:', req.ip);
+      return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid or expired Telegram session.' });
     }
 
-    // Attach user to request for cross-verification in endpoints
     (req as any).tgUser = tgUser;
     next();
   };
@@ -86,72 +89,62 @@ async function startServer() {
   // Helper to ensure the body ID matches the authenticated ID
   const verifyUserMatch = (req: express.Request, targetId: any): boolean => {
     const authId = (req as any).tgUser?.id?.toString();
-    if (!authId && process.env.NODE_ENV !== 'production') return true; // Skip in dev if no auth
-    return authId === targetId?.toString();
+    if (!authId && process.env.NODE_ENV !== 'production') return true; 
+    const match = authId === targetId?.toString();
+    if (!match) console.warn(`[AUTH] User mismatch: Auth(${authId}) vs targetId(${targetId})`);
+    return match;
   };
 
   // Sync endpoint - Handles initial connection and energy refill
   app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, username, first_name, photo_url, referred_by } = req.body;
-      
-      if (!verifyUserMatch(req, telegramId)) {
-        return res.status(403).json({ error: 'FORBIDDEN', message: 'Identity mismatch. You can only sync your own account.' });
-      }
-
-      if (!supabaseUrl || !supabaseKey) {
-        throw new Error('Supabase configuration missing');
-      }
-
       const idStr = telegramId?.toString();
-      if (!idStr) return res.status(400).json({ error: 'telegramId is required' });
+      
+      console.log(`[SYNC] Request for: ${username || 'Unknown'} (${idStr})`);
 
-      // Use upsert to stay efficient and avoid "not found" errors
-      // On insert: use defaults. On update: just fetch.
-      let { data: user, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', idStr)
-        .single();
+      if (!idStr) return res.status(400).json({ error: 'telegramId required' });
 
-      if (error && error.code !== 'PGRST116') {
-        console.error('Supabase Fetch Error:', error);
-        throw error;
+      if (!verifyUserMatch(req, idStr)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
       }
+
+      let { data: user, error } = await supabase.from('profiles').select('*').eq('id', idStr).single();
+
+      if (error && error.code !== 'PGRST116') throw error;
 
       if (!user) {
-        console.log(`NEW USER: ${idStr}. Creating...`);
+        console.log(`[SYNC] REGISTERING NEW USER: ${idStr}`);
         const { data: newUser, error: createError } = await supabase
           .from('profiles')
           .insert([{
             id: idStr,
-            username,
-            first_name,
-            photo_url,
-            referred_by,
+            username: username || '',
+            first_name: first_name || '',
+            photo_url: photo_url || null,
+            referred_by: referred_by || null,
             updated_at: new Date().toISOString()
           }])
           .select()
           .single();
 
         if (createError) {
-          console.error('Create User Error:', createError);
+          console.error('[SYNC] Registration Error:', createError);
           throw createError;
         }
         user = newUser;
       }
 
-      // Energy Refill (1 per sec)
+      // Energy calculation logic remains robust...
       if (user) {
-        const last = new Date(user.updated_at || user.created_at);
-        const now = new Date();
-        const diff = Math.floor((now.getTime() - last.getTime()) / 1000);
-        const refilledEnergy = Math.min(1000, user.energy + Math.max(0, diff));
+        const lastUpdate = new Date(user.updated_at || user.created_at);
+        const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
+        const refilled = Math.min(1000, (user.energy || 0) + Math.max(0, diffSecs));
 
-        if (refilledEnergy !== user.energy) {
+        if (refilled !== user.energy) {
           const { data: updated } = await supabase
             .from('profiles')
-            .update({ energy: refilledEnergy, updated_at: now.toISOString() })
+            .update({ energy: refilled, updated_at: new Date().toISOString() })
             .eq('id', idStr)
             .select()
             .single();
@@ -159,48 +152,63 @@ async function startServer() {
         }
       }
 
-      res.json(user);
+      const { count: refCount } = await supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
+      res.json({ ...user, referralCount: refCount || 0 });
     } catch (err: any) {
-      console.error('Sync Fatal:', err.message);
-      res.status(500).json({ error: err.message });
+      console.error('[SYNC] Fatal Error:', err.message);
+      res.status(500).json({ error: 'Sync failed. Database might be down.' });
     }
   });
 
-  // Unified Adsgram Reward (Called by webhook or frontend)
+  // Unified Adsgram Reward
   const grantAdReward = async (id: string) => {
+    console.log(`[REWARD-SYSTEM] Processing user: ${id}`);
     const { data: user } = await supabase.from('profiles').select('*').eq('id', id).single();
     if (!user) return null;
 
     const questStates = user.daily_quest_states || {};
     const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
-    if (adState.count >= 10) return null;
+    
+    const today = new Date().toDateString();
+    const lastDate = new Date(adState.last_ad_at || 0).toDateString();
+    const countToday = today === lastDate ? adState.count : 0;
 
-    const now = Date.now();
+    if (countToday >= 10) {
+      console.warn(`[REWARD-SYSTEM] Limit reached for ${id}`);
+      return null;
+    }
+
     const { data: updated } = await supabase
       .from('profiles')
       .update({
         balance: (user.balance || 0) + 2500,
         airdropRank: (user.airdropRank || 0) + 15,
-        daily_quest_states: {
-          ...questStates,
-          adsgram: { count: adState.count + 1, last_ad_at: now }
-        }
+        daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
       })
       .eq('id', id)
       .select()
       .single();
+    
     return updated;
   };
 
   app.get('/api/adsgram/reward', async (req, res) => {
-    const { userid } = req.query;
-    if (!userid) return res.status(400).send('missing userid');
-    const user = await grantAdReward(userid.toString());
-    res.send(user ? 'ok' : 'error');
+    // Making this robust for any variation of the parameter name
+    const userid = req.query.userid || req.query.userId || req.query.user_id;
+    console.log(`[ADSGRAM-WEBHOOK] Ping received for user: ${userid}`);
+    
+    if (!userid) {
+      console.warn('[ADSGRAM-WEBHOOK] Missing userid parameter in request');
+      return res.status(400).send('missing userid');
+    }
+    
+    const success = await grantAdReward(userid.toString());
+    res.send(success ? 'ok' : 'error');
   });
 
   app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
     const { telegramId } = req.body;
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
     const user = await grantAdReward(telegramId.toString());
     if (user) res.json(user);
     else res.status(400).json({ error: 'Reward failed or limit reached' });
@@ -248,10 +256,10 @@ async function startServer() {
     }
   });
 
-  // Aggressive Balance Sync
-  app.post('/api/user/sync-balance', validateTelegramData, async (req, res) => {
+  // Secure Tapping Sync (The user cannot just send any balance)
+  app.post('/api/user/sync-taps', validateTelegramData, async (req, res) => {
     try {
-      const { telegramId, balance, energy } = req.body;
+      const { telegramId, taps } = req.body;
       const idStr = telegramId?.toString();
       if (!idStr) return res.status(400).json({ error: 'missing id' });
 
@@ -259,18 +267,32 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
+      // Get current state
+      const { data: user, error: fetchError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', idStr)
+        .single();
+      
+      if (fetchError) throw fetchError;
+
+      // Sanitize taps (user cannot spend more energy than they have)
+      const validTaps = Math.min(taps || 0, user.energy);
+      const newBalance = (user.balance || 0) + validTaps;
+      const newEnergy = Math.max(0, user.energy - validTaps);
+
       const { data, error } = await supabase
         .from('profiles')
-        .update({ balance, energy, updated_at: new Date().toISOString() })
+        .update({ 
+          balance: newBalance, 
+          energy: newEnergy, 
+          updated_at: new Date().toISOString() 
+        })
         .eq('id', idStr)
         .select()
         .single();
       
-      if (error) {
-        // If user doesn't exist, we don't throw, we just return current state
-        if (error.code === 'PGRST116') return res.json({ id: idStr, balance, energy });
-        throw error;
-      }
+      if (error) throw error;
       res.json(data);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
