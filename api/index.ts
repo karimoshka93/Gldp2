@@ -217,6 +217,76 @@ app.post('/api/user/claim', validateTelegramData, async (req, res) => {
   }
 });
 
+app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
+  try {
+    const { telegramId } = req.body;
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+    const user = await grantAdReward(telegramId.toString());
+    if (user) res.json(user);
+    else res.status(400).json({ error: 'Reward failed or limit reached' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
+  try {
+    const { telegramId, questId, reward, points } = req.body;
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+
+    const userRef = fdb.collection('users').doc(telegramId.toString());
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) throw new Error('User not found');
+    const user = userDoc.data()!;
+
+    const questStates = user.daily_quest_states || {};
+    const now = new Date();
+
+    if (questStates[questId]) {
+      const last = new Date(questStates[questId]);
+      if (last.toDateString() === now.toDateString()) {
+        return res.status(400).json({ error: 'Already done today' });
+      }
+    }
+
+    await userRef.update({
+      balance: (user.balance || 0) + reward,
+      airdropRank: (user.airdropRank || 0) + points,
+      daily_quest_states: { ...questStates, [questId]: now.toISOString() }
+    });
+
+    res.json((await userRef.get()).data());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
+  try {
+    const { telegramId, developerId, cost, boost } = req.body;
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+
+    const userRef = fdb.collection('users').doc(telegramId.toString());
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) throw new Error('User not found');
+    const user = userDoc.data()!;
+
+    if ((user.balance || 0) < cost) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+
+    await userRef.update({
+      balance: (user.balance || 0) - cost,
+      multiplier: (user.multiplier || 0) + boost,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json((await userRef.get()).data());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/leaderboard', async (req, res) => {
   try {
     const snapshot = await fdb.collection('users').orderBy('airdropRank', 'desc').limit(100).get();

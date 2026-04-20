@@ -116,11 +116,17 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
   // Live calculation of accumulated passive income
   useEffect(() => {
     const interval = setInterval(() => {
+      if (!user) return;
       const now = new Date();
-      const lastClaim = new Date(user.last_claim_at);
+      // Handle Firestore Timestamp or string
+      const lastClaimAt = user.last_claim_at as any;
+      const lastClaim = (lastClaimAt && typeof lastClaimAt === 'object' && '_seconds' in lastClaimAt)
+        ? new Date(lastClaimAt._seconds * 1000)
+        : new Date(lastClaimAt || Date.now());
+      
       const diffSecs = (now.getTime() - lastClaim.getTime()) / 1000;
       
-      const earned = Math.floor(diffSecs * user.multiplier);
+      const earned = Math.floor(Math.max(0, diffSecs) * user.multiplier);
       setAccumulated(earned);
       
       const remaining = Math.max(0, 14400 - (diffSecs % 14400));
@@ -161,6 +167,11 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
   // Client-side visual energy refill (1 per sec)
   useEffect(() => {
     const energyInterval = setInterval(() => {
+      const lastUpdateRaw = user.updated_at as any;
+      const lastUpdate = (lastUpdateRaw && typeof lastUpdateRaw === 'object' && '_seconds' in lastUpdateRaw)
+        ? new Date(lastUpdateRaw._seconds * 1000)
+        : new Date(lastUpdateRaw || Date.now());
+      
       if (user && user.energy < 1000) {
         setUser((prev: UserProfile | null) => prev ? { ...prev, energy: Math.min(1000, prev.energy + 1) } : null);
       }
@@ -800,7 +811,15 @@ const ProfilePage = ({ user, referralCount, setUser, errorDetails }: { user: Use
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-xs text-[#94a3b8]">Last Server Sync</span>
-                <span className="text-xs font-mono text-green-400">{new Date(user.updated_at).toLocaleTimeString()}</span>
+                <span className="text-xs font-mono text-green-400">
+                  {(() => {
+                    const d = user.updated_at as any;
+                    const date = (d && typeof d === 'object' && '_seconds' in d)
+                      ? new Date(d._seconds * 1000)
+                      : new Date(d || Date.now());
+                    return date.toLocaleTimeString();
+                  })()}
+                </span>
               </div>
             </div>
           </div>
