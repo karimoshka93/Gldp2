@@ -220,18 +220,7 @@ app.post('/api/user/claim', validateTelegramData, async (req, res) => {
   }
 });
 
-app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
-  try {
-    const { telegramId } = req.body;
-    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
-    const user = await grantAdReward(telegramId.toString());
-    if (user) res.json(user);
-    else res.status(400).json({ error: 'Reward failed or limit reached' });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
+// Removal of app.post('/api/user/ad-reward', ...)
 app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
   try {
     const { telegramId, questId, reward, points, type } = req.body;

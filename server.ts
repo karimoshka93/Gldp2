@@ -233,15 +233,6 @@ async function startServer() {
     res.send(success ? 'ok' : 'error');
   });
 
-  app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
-    const { telegramId } = req.body;
-    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
-    const user = await grantAdReward(telegramId.toString());
-    if (user) res.json(user);
-    else res.status(400).json({ error: 'Reward failed or limit reached' });
-  });
-
-  // Quest Completion
   app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, questId, reward, points, type } = req.body;

@@ -536,50 +536,50 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       if (adCount >= 10) return alert('Daily ads limit reached!');
       if (adCooldown > 0) return alert(`Please wait ${Math.floor(adCooldown/60)}m ${adCooldown%60}s for next ad`);
 
-      // Adsgram logic - Aggressive check with re-injection
-      const getAdsgram = () => (window as any).Adsgram;
+      const Adsgram = (window as any).Adsgram;
       const blockId = (import.meta as any).env.VITE_ADSGRAM_BLOCK_ID || "28171";
       
-      if (!getAdsgram()) {
-        const s = document.createElement('script');
-        s.src = "https://sad.adsgram.ai/js/adsgram-sdk.js";
-        s.async = true;
-        document.head.appendChild(s);
-        return alert('Ads SDK initializing. Please wait a few seconds and tap again.');
+      if (!Adsgram) {
+        return alert('Ad system is not available yet. Please wait a few seconds.');
       }
 
-      const adsgram = getAdsgram();
-      if (adsgram) {
-        // @ts-ignore
-        const AdController = adsgram.init({ blockId });
-        AdController.show().then(async () => {
-          // Success
+      // @ts-ignore
+      const AdController = Adsgram.init({ blockId });
+      AdController.show().then(async () => {
+        // Success - Wait a second for S2S to potentially finish if using S2S
+        // Then re-sync user profile to reflect the reward
+        setTimeout(async () => {
           try {
-            const res = await fetch('/api/user/ad-reward', {
+            const res = await fetch('/api/user/sync', {
               method: 'POST',
               headers: { 
                 'Content-Type': 'application/json',
                 'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
               },
-              body: JSON.stringify({ telegramId: user.id })
+              body: JSON.stringify({ 
+                telegramId: user.id,
+                username: user.username,
+                first_name: user.first_name,
+                photo_url: user.photo_url
+              })
             });
             const data = await res.json();
             if (data.id) {
               setUser(data);
-              alert('Ad watched! +2,500 GLDp (Reward limit: 10/day)');
+              alert('Ad watched! Your balance will be updated shortly via verified reward.');
             }
           } catch (err) {
-            console.error("Reward error:", err);
+            console.error("Sync error:", err);
           }
-        }).catch((err: any) => {
-          console.warn("Adsgram partial completion or skip:", err);
-          if (err && err.error === 'ad_blocked') {
-            alert('Ad was blocked by your browser or device. Please disable ad-blockers to earn rewards.');
-          } else {
-            alert('Ad skipped. Watch the full ad to earn rewards!');
-          }
-        });
-      }
+        }, 3000); // 3 second delay to let S2S finish
+      }).catch((err: any) => {
+        console.warn("Adsgram skipped or blocked:", err);
+        if (err && err.error === 'ad_blocked') {
+          alert('Ad blocked! Disable your ad-blocker to earn rewards.');
+        } else {
+          alert('Ad skipped. You must watch the full ad to be rewarded.');
+        }
+      });
     }
   };
 
