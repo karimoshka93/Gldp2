@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -23,14 +24,8 @@ admin.initializeApp({
   projectId: firebaseConfig.projectId,
 });
 
-const db = admin.firestore();
-// Use the specific database ID if provided in config, otherwise default
-const firestore = firebaseConfig.firestoreDatabaseId 
-  ? (db as any).terminate().then(() => admin.firestore(firebaseConfig.firestoreDatabaseId)) 
-  : db;
-
-// Note: admin.firestore() is the standard way. If a specific DB ID is needed:
-const fdb = firebaseConfig.firestoreDatabaseId ? admin.firestore(firebaseConfig.firestoreDatabaseId) : admin.firestore();
+// Correct way to get Firestore instance for a specific database ID in firebase-admin v13+
+const fdb = firebaseConfig.firestoreDatabaseId ? getFirestore(firebaseConfig.firestoreDatabaseId) : getFirestore();
 
 async function startServer() {
   const app = express();
@@ -130,13 +125,30 @@ async function startServer() {
 
       if (!user) {
         console.log(`[SYNC] REGISTERING NEW FIREBASE USER: ${idStr}`);
+        
+        // Reward referrer if exists
+        if (referred_by) {
+          try {
+            const referrerRef = fdb.collection('users').doc(referred_by.toString());
+            const referrerDoc = await referrerRef.get();
+            if (referrerDoc.exists) {
+              await referrerRef.update({
+                balance: admin.firestore.FieldValue.increment(25000), // 25k bonus for referring
+                updated_at: admin.firestore.FieldValue.serverTimestamp()
+              });
+            }
+          } catch (refErr) {
+            console.error("Referral reward error:", refErr);
+          }
+        }
+
         const newUser = {
           id: idStr,
           username: username || '',
           first_name: first_name || '',
           photo_url: photo_url || null,
           referred_by: referred_by || null,
-          balance: 0,
+          balance: referred_by ? 5000 : 0, // 5k bonus for being referred
           multiplier: 0.1,
           airdropRank: 0,
           energy: 1000,

@@ -1,5 +1,6 @@
 import express from 'express';
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -38,7 +39,7 @@ if (!admin.apps.length) {
   }
 }
 
-const fdb = firebaseConfig.firestoreDatabaseId ? admin.firestore(firebaseConfig.firestoreDatabaseId) : admin.firestore();
+const fdb = firebaseConfig.firestoreDatabaseId ? getFirestore(firebaseConfig.firestoreDatabaseId) : getFirestore();
 
 // Middleware to validate Telegram WebApp initData 
 const verifyTelegramInitData = (initData: string): { id: number; username?: string; first_name?: string } | null => {
@@ -97,13 +98,29 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     let user = userDoc.exists ? userDoc.data() : null;
 
     if (!user) {
+      // Reward referrer if exists
+      if (referred_by) {
+        try {
+          const referrerRef = fdb.collection('users').doc(referred_by.toString());
+          const referrerDoc = await referrerRef.get();
+          if (referrerDoc.exists) {
+            await referrerRef.update({
+              balance: admin.firestore.FieldValue.increment(25000), // 25k bonus for referring
+              updated_at: admin.firestore.FieldValue.serverTimestamp()
+            });
+          }
+        } catch (refErr) {
+          console.error("Referral reward error:", refErr);
+        }
+      }
+
       user = {
         id: idStr,
         username: username || '',
         first_name: first_name || '',
         photo_url: photo_url || null,
         referred_by: referred_by || null,
-        balance: 0,
+        balance: referred_by ? 5000 : 0, // 5k bonus for being referred
         multiplier: 0.1,
         airdropRank: 0,
         energy: 1000,
@@ -208,7 +225,5 @@ app.get('/api/leaderboard', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-export default app;
 
 export default app;
