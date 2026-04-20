@@ -106,6 +106,7 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
           if (referrerDoc.exists) {
             await referrerRef.update({
               balance: admin.firestore.FieldValue.increment(25000), // 25k bonus for referring
+              airdropRank: admin.firestore.FieldValue.increment(50), // +50 Activity Points
               updated_at: admin.firestore.FieldValue.serverTimestamp()
             });
           }
