@@ -165,7 +165,15 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
     }, 800);
   };
 
-  // Energy is now fixed daily taps - no client-side refill needed
+  // Client-side visual energy refill (1 per sec)
+  useEffect(() => {
+    const energyInterval = setInterval(() => {
+      if (user && user.energy < 1000) {
+        setUser((prev: UserProfile | null) => prev ? { ...prev, energy: Math.min(1000, prev.energy + 1) } : null);
+      }
+    }, 1000);
+    return () => clearInterval(energyInterval);
+  }, [user?.energy]);
 
   // Sync tapValue if user.balance changes externally (e.g. claim or from server update)
   useEffect(() => {
@@ -270,15 +278,15 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
         <div className="glass-card p-4 border-white/5 bg-[#1e293b]/50">
           <div className="flex items-center gap-2 mb-2">
             <Zap className="w-4 h-4 text-yellow-400 fill-yellow-400" />
-            <span className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">Daily Taps Left</span>
+            <span className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">Energy Supply</span>
           </div>
           <div className="flex items-end justify-between">
-            <p className="text-xl font-black text-white">{user.energy}<span className="text-[10px] text-neutral-500 ml-1">/100</span></p>
+            <p className="text-xl font-black text-white">{user.energy}<span className="text-[10px] text-neutral-500 ml-1">/1000</span></p>
           </div>
           <div className="w-full h-1.5 bg-white/5 rounded-full mt-3 overflow-hidden border border-white/5">
             <motion.div 
               initial={{ width: 0 }}
-              animate={{ width: `${(user.energy / 100) * 100}%` }}
+              animate={{ width: `${(user.energy / 1000) * 100}%` }}
               className="h-full bg-gradient-to-r from-yellow-400 to-amber-600 shadow-[0_0_10px_rgba(234,179,8,0.4)]" 
             />
           </div>

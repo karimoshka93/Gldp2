@@ -1,31 +1,20 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
-import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3000;
 
-// Firebase Setup
-const configPath = path.join(__dirname, 'firebase-applet-config.json');
-let firebaseConfig: any = {};
-if (fs.existsSync(configPath)) {
-  firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-}
-
-admin.initializeApp({
-  projectId: firebaseConfig.projectId,
-});
-
-// Correct way to get Firestore instance for a specific database ID in firebase-admin v13+
-const fdb = firebaseConfig.firestoreDatabaseId ? getFirestore(firebaseConfig.firestoreDatabaseId) : getFirestore();
+// Supabase Setup
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Global cache for leaderboard to save quotas
 const leaderboardCaches: Record<string, { data: any[], expires: number }> = {};
@@ -114,7 +103,7 @@ async function startServer() {
       const { telegramId, username, first_name, photo_url, referred_by } = req.body;
       const idStr = telegramId?.toString();
       
-      console.log(`[SYNC] Firebase Request for: ${username || 'Unknown'} (${idStr})`);
+      console.log(`[SYNC] Supabase Request for: ${username || 'Unknown'} (${idStr})`);
 
       if (!idStr) return res.status(400).json({ error: 'telegramId required' });
 
@@ -122,24 +111,39 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const userRef = fdb.collection('users').doc(idStr);
-      let userDoc = await userRef.get();
-      let user = userDoc.exists ? userDoc.data() : null;
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', idStr)
+        .single();
 
-      if (!user) {
-        console.log(`[SYNC] REGISTERING NEW FIREBASE USER: ${idStr}`);
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        throw fetchError;
+      }
+
+      let currentUser = user;
+
+      if (!currentUser) {
+        console.log(`[SYNC] REGISTERING NEW SUPABASE USER: ${idStr}`);
         
         // Reward referrer if exists
         if (referred_by) {
           try {
-            const referrerRef = fdb.collection('users').doc(referred_by.toString());
-            const referrerDoc = await referrerRef.get();
-            if (referrerDoc.exists) {
-              await referrerRef.update({
-                balance: admin.firestore.FieldValue.increment(25000), // 25k bonus for referring
-                airdropRank: admin.firestore.FieldValue.increment(50), // +50 Activity Points
-                updated_at: admin.firestore.FieldValue.serverTimestamp()
-              });
+            const { data: referrer, error: refFetchError } = await supabase
+              .from('users')
+              .select('balance, airdropRank')
+              .eq('id', referred_by.toString())
+              .single();
+
+            if (referrer) {
+              await supabase
+                .from('users')
+                .update({
+                  balance: (referrer.balance || 0) + 25000,
+                  airdropRank: (referrer.airdropRank || 0) + 50,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', referred_by.toString());
             }
           } catch (refErr) {
             console.error("Referral reward error:", refErr);
@@ -154,57 +158,85 @@ async function startServer() {
           referred_by: referred_by || null,
           balance: referred_by ? 5000 : 0, 
           multiplier: 0.1,
-          tap_value: 1, // Default tap value
-          daily_taps: 0, // Count of taps today
+          tap_value: 1, 
+          daily_taps: 0, 
           airdropRank: 0,
-          energy: 100, // ENERGY IS NOW "DAILY TAPS LEFT"
+          energy: 1000, // Energy is now 1000
           daily_quest_states: {},
           completed_missions: [],
           upgrades: {},
-          last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
-          updated_at: admin.firestore.FieldValue.serverTimestamp(),
-          created_at: admin.firestore.FieldValue.serverTimestamp(),
+          last_claim_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
         };
-        await userRef.set(newUser);
-        user = newUser;
+
+        const { data: insertedUser, error: insertError } = await supabase
+          .from('users')
+          .insert([newUser])
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+        currentUser = insertedUser;
       }
 
-      // Reset daily taps if it's a new day
-      if (user) {
-        const lastUpdate = user.updated_at?.toDate?.() || new Date(user.updated_at);
-        const today = new Date().toDateString();
-        const lastDate = lastUpdate.toDateString();
+      // Restore Energy Refill Logic and Reset Daily Taps if new day
+      if (currentUser) {
+        const lastUpdate = new Date(currentUser.updated_at);
+        const todayStr = new Date().toDateString();
+        const lastDateStr = lastUpdate.toDateString();
+        
+        const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
+        let currentEnergy = currentUser.energy || 0;
+        let currentDailyTaps = currentUser.daily_taps || 0;
 
-        if (today !== lastDate) {
-          // New day - reset taps and energy
-          await userRef.update({
-            daily_taps: 0,
-            energy: 100, // Reset to 100 taps available
-            updated_at: admin.firestore.FieldValue.serverTimestamp()
-          });
-          user.daily_taps = 0;
-          user.energy = 100;
+        // refill energy +1 per sec up to 1000
+        currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
+
+        // daily taps reset
+        if (todayStr !== lastDateStr) {
+          currentDailyTaps = 0;
+        }
+
+        if (currentEnergy !== currentUser.energy || currentDailyTaps !== currentUser.daily_taps) {
+          const { data: updatedUser, error: updateError } = await supabase
+            .from('users')
+            .update({
+              energy: currentEnergy,
+              daily_taps: currentDailyTaps,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', idStr)
+            .select()
+            .single();
+          
+          if (!updateError) currentUser = updatedUser;
         }
       }
 
       // Get referral count
-      const refSnapshot = await fdb.collection('users').where('referred_by', '==', idStr).count().get();
-      const refCount = refSnapshot.data().count;
+      const { count, error: countError } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('referred_by', idStr);
 
-      res.json({ ...user, referralCount: refCount || 0 });
+      res.json({ ...currentUser, referralCount: count || 0 });
     } catch (err: any) {
-      console.error('[SYNC] Firebase Fatal Error:', err.message);
-      res.status(500).json({ error: 'Sync failed. Database might be down.' });
+      console.error('[SYNC] Supabase Fatal Error:', err.message);
+      res.status(500).json({ error: 'Sync failed.' });
     }
   });
 
   // Unified Adsgram Reward
   const grantAdReward = async (id: string) => {
-    console.log(`[REWARD-SYSTEM] Firebase processing user: ${id}`);
-    const userRef = fdb.collection('users').doc(id);
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) return null;
-    const user = userDoc.data()!;
+    console.log(`[REWARD-SYSTEM] Supabase processing user: ${id}`);
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !user) return null;
 
     const questStates = user.daily_quest_states || {};
     const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
@@ -218,13 +250,17 @@ async function startServer() {
       return null;
     }
 
-    await userRef.update({
-      balance: (user.balance || 0) + 2500,
-      airdropRank: (user.airdropRank || 0) + 15,
-      daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
-    });
+    const { data: updated, error: updateError } = await supabase
+      .from('users')
+      .update({
+        balance: (user.balance || 0) + 2500,
+        airdropRank: (user.airdropRank || 0) + 15,
+        daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
+      })
+      .eq('id', id)
+      .select()
+      .single();
     
-    const updated = (await userRef.get()).data();
     return updated;
   };
 
@@ -250,21 +286,32 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const userRef = fdb.collection('users').doc(idStr);
-      const userDoc = await userRef.get();
-      if (!userDoc.exists) throw new Error('User not found');
-      const user = userDoc.data()!;
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', idStr)
+        .single();
+        
+      if (!user) throw new Error('User not found');
 
       if (type === 'social') {
         const completed = user.completed_missions || [];
         if (completed.includes(questId)) {
           return res.status(400).json({ error: 'Already completed' });
         }
-        await userRef.update({
-          balance: (user.balance || 0) + reward,
-          airdropRank: (user.airdropRank || 0) + points,
-          completed_missions: admin.firestore.FieldValue.arrayUnion(questId)
-        });
+        const { data: updated, error: updateError } = await supabase
+          .from('users')
+          .update({
+            balance: (user.balance || 0) + reward,
+            airdropRank: (user.airdropRank || 0) + points,
+            completed_missions: [...completed, questId]
+          })
+          .eq('id', idStr)
+          .select()
+          .single();
+        
+        if (updateError) throw updateError;
+        return res.json(updated);
       } else {
         const questStates = user.daily_quest_states || {};
         const now = new Date();
@@ -276,21 +323,26 @@ async function startServer() {
           }
         }
 
-        await userRef.update({
-          balance: (user.balance || 0) + reward,
-          airdropRank: (user.airdropRank || 0) + points,
-          daily_quest_states: { ...questStates, [questId]: now.toISOString() }
-        });
+        const { data: updated, error: updateError } = await supabase
+          .from('users')
+          .update({
+            balance: (user.balance || 0) + reward,
+            airdropRank: (user.airdropRank || 0) + points,
+            daily_quest_states: { ...questStates, [questId]: now.toISOString() }
+          })
+          .eq('id', idStr)
+          .select()
+          .single();
+        
+        if (updateError) throw updateError;
+        return res.json(updated);
       }
-
-      const updated = (await userRef.get()).data();
-      res.json(updated);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Secure Tapping Sync
+  // Secure Tapping Sync (Restored Energy Logic)
   app.post('/api/user/sync-taps', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, taps } = req.body;
@@ -301,32 +353,36 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const userRef = fdb.collection('users').doc(idStr);
-      const userDoc = await userRef.get();
-      if (!userDoc.exists) throw new Error('User not found');
-      const user = userDoc.data()!;
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', idStr)
+        .single();
+        
+      if (!user) throw new Error('User not found');
 
-      // Calculate how many taps can still be done
-      const dailyLimit = 100;
-      const currentDaily = user.daily_taps || 0;
-      const available = Math.max(0, dailyLimit - currentDaily);
-      const actualTaps = Math.min(taps || 0, available);
+      const tapValue = user.tap_value || 1;
+      const actualTaps = Math.min(taps || 0, user.energy || 0);
 
       if (actualTaps <= 0 && taps > 0) {
         return res.json(user);
       }
 
-      const tapValue = user.tap_value || 1;
       const reward = actualTaps * tapValue;
 
-      await userRef.update({ 
-        balance: (user.balance || 0) + reward, 
-        energy: Math.max(0, available - actualTaps), // "Energy" is now daily taps left
-        daily_taps: currentDaily + actualTaps,
-        updated_at: admin.firestore.FieldValue.serverTimestamp() 
-      });
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({ 
+          balance: (user.balance || 0) + reward, 
+          energy: (user.energy || 0) - actualTaps,
+          daily_taps: (user.daily_taps || 0) + actualTaps, // Still tracking daily taps for stats
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', idStr)
+        .select()
+        .single();
       
-      const updated = (await userRef.get()).data();
+      if (updateError) throw updateError;
       res.json(updated);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -342,25 +398,33 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const userRef = fdb.collection('users').doc(telegramId.toString());
-      const userDoc = await userRef.get();
-      if (!userDoc.exists) throw new Error('User not found');
-      const user = userDoc.data()!;
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', telegramId.toString())
+        .single();
+
+      if (!user) throw new Error('User not found');
 
       const now = new Date();
-      const lastClaim = user.last_claim_at?.toDate?.() || new Date(user.last_claim_at || user.created_at);
+      const lastClaim = new Date(user.last_claim_at || user.created_at);
       const diffSecs = (now.getTime() - lastClaim.getTime()) / 1000;
-      const earnings = Math.floor(diffSecs * (user.multiplier || 0.1));
+      const earnings = Math.floor(Math.max(0, diffSecs) * (user.multiplier || 0.1));
       
       if (earnings <= 0) return res.status(400).json({ error: 'Nothing to claim yet' });
 
-      await userRef.update({
-        balance: (user.balance || 0) + earnings,
-        last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({
+          balance: (user.balance || 0) + earnings,
+          last_claim_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
 
-      const updated = (await userRef.get()).data();
+      if (updateError) throw updateError;
       res.json({ user: updated, earned: earnings });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -376,10 +440,13 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const userRef = fdb.collection('users').doc(telegramId.toString());
-      const userDoc = await userRef.get();
-      if (!userDoc.exists) throw new Error('User not found');
-      const user = userDoc.data()!;
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', telegramId.toString())
+        .single();
+        
+      if (!user) throw new Error('User not found');
 
       if ((user.balance || 0) < cost) {
         return res.status(400).json({ error: 'Insufficient balance' });
@@ -388,24 +455,49 @@ async function startServer() {
       const upgrades = user.upgrades || {};
       const nextLevel = (upgrades[developerId] || 0) + 1;
 
-      const updateData: any = {
-        balance: admin.firestore.FieldValue.increment(-cost),
-        [`upgrades.${developerId}`]: nextLevel,
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      const updateFields: any = {
+        balance: (user.balance || 0) - cost,
+        [`upgrades.${developerId}`]: nextLevel, // Note: For JSONB updates, we might need a more specific query if nested paths are complex
+        updated_at: new Date().toISOString()
       };
+
+      // Handle JSONB update for upgrades correctly in Supabase/Postgres
+      const newUpgrades = { ...upgrades, [developerId]: nextLevel };
 
       if (upgradeType === 'tap') {
         const currentTap = user.tap_value || 1;
         if (currentTap >= 100) return res.status(400).json({ error: 'Maximum Tap Performance Reached' });
-        updateData.tap_value = admin.firestore.FieldValue.increment(boost);
+        
+        const { data: updated, error: updateError } = await supabase
+          .from('users')
+          .update({
+            balance: (user.balance || 0) - cost,
+            upgrades: newUpgrades,
+            tap_value: (user.tap_value || 1) + boost,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', telegramId.toString())
+          .select()
+          .single();
+        
+        if (updateError) throw updateError;
+        return res.json(updated);
       } else {
-        updateData.multiplier = admin.firestore.FieldValue.increment(boost);
+        const { data: updated, error: updateError } = await supabase
+          .from('users')
+          .update({
+            balance: (user.balance || 0) - cost,
+            upgrades: newUpgrades,
+            multiplier: (user.multiplier || 0.1) + boost,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', telegramId.toString())
+          .select()
+          .single();
+          
+        if (updateError) throw updateError;
+        return res.json(updated);
       }
-
-      await userRef.update(updateData);
-
-      const updated = (await userRef.get()).data();
-      res.json(updated);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -423,14 +515,17 @@ async function startServer() {
       
       // Cache logic
       if (!leaderboardCaches[cacheKey] || now > leaderboardCaches[cacheKey].expires) {
-        console.log(`[LEADERBOARD] Refreshing Cache for ${sortColumn}`);
-        const snapshot = await fdb.collection('users')
-          .orderBy(sortColumn, 'desc')
-          .limit(20)
-          .get();
+        console.log(`[LEADERBOARD] Refreshing Cache for ${sortColumn} from Supabase`);
+        const { data: top20, error: fetchError } = await supabase
+          .from('users')
+          .select('*')
+          .order(sortColumn, { ascending: false })
+          .limit(20);
+
+        if (fetchError) throw fetchError;
 
         leaderboardCaches[cacheKey] = {
-          data: snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+          data: top20 || [],
           expires: now + (15 * 60 * 1000)
         };
       }
@@ -438,20 +533,22 @@ async function startServer() {
       let data = [...leaderboardCaches[cacheKey].data];
       let userRank = 0;
 
-      // If user provides their ID, we fetch their specific rank efficiency
       if (userId) {
-        const userDoc = await fdb.collection('users').doc(userId.toString()).get();
-        if (userDoc.exists) {
-          const userData = userDoc.data()!;
+        const { data: userData, error: userFetchError } = await supabase
+          .from('users')
+          .select(sortColumn)
+          .eq('id', userId.toString())
+          .single();
+
+        if (userData) {
           const userValue = userData[sortColumn] || 0;
           
-          // Get rank by counting users with higher value
-          const rankSnapshot = await fdb.collection('users')
-            .where(sortColumn, '>', userValue)
-            .count()
-            .get();
+          const { count, error: rankError } = await supabase
+            .from('users')
+            .select('*', { count: 'exact', head: true })
+            .gt(sortColumn, userValue);
           
-          userRank = rankSnapshot.data().count + 1;
+          if (!rankError) userRank = (count || 0) + 1;
         }
       }
 
@@ -461,7 +558,7 @@ async function startServer() {
         lastUpdate: leaderboardCaches[cacheKey].expires - (15 * 60 * 1000) 
       });
     } catch (err: any) {
-      console.error('[LEADERBOARD] Fatal Error:', err.message);
+      console.error('[LEADERBOARD] Supabase Fatal Error:', err.message);
       res.status(500).json({ error: err.message });
     }
   });

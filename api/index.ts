@@ -1,9 +1,7 @@
 import express from 'express';
-import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
-import fs from 'fs';
 import path from 'path';
 
 dotenv.config();
@@ -11,35 +9,10 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Firebase Setup
-const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-let firebaseConfig: any = {};
-if (fs.existsSync(configPath)) {
-  firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-}
-
-if (!admin.apps.length) {
-  // If we have a service account in env vars, use it (Required for Vercel)
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    try {
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        projectId: firebaseConfig.projectId,
-      });
-    } catch (e) {
-      console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT:', e);
-      admin.initializeApp({ projectId: firebaseConfig.projectId });
-    }
-  } else {
-    // Normal initialization for AI Studio environment
-    admin.initializeApp({
-      projectId: firebaseConfig.projectId,
-    });
-  }
-}
-
-const fdb = firebaseConfig.firestoreDatabaseId ? getFirestore(firebaseConfig.firestoreDatabaseId) : getFirestore();
+// Supabase Setup
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Middleware to validate Telegram WebApp initData 
 const verifyTelegramInitData = (initData: string): { id: number; username?: string; first_name?: string } | null => {
@@ -96,29 +69,44 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     const idStr = telegramId?.toString();
     if (!idStr || !verifyUserMatch(req, idStr)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-    const userRef = fdb.collection('users').doc(idStr);
-    let userDoc = await userRef.get();
-    let user = userDoc.exists ? userDoc.data() : null;
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', idStr)
+      .single();
 
-    if (!user) {
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      throw fetchError;
+    }
+
+    let currentUser = user;
+
+    if (!currentUser) {
       // Reward referrer if exists
       if (referred_by) {
         try {
-          const referrerRef = fdb.collection('users').doc(referred_by.toString());
-          const referrerDoc = await referrerRef.get();
-          if (referrerDoc.exists) {
-            await referrerRef.update({
-              balance: admin.firestore.FieldValue.increment(25000), // 25k bonus for referring
-              airdropRank: admin.firestore.FieldValue.increment(50), // +50 Activity Points
-              updated_at: admin.firestore.FieldValue.serverTimestamp()
-            });
+          const { data: referrer, error: refFetchError } = await supabase
+            .from('users')
+            .select('balance, airdropRank')
+            .eq('id', referred_by.toString())
+            .single();
+
+          if (referrer) {
+            await supabase
+              .from('users')
+              .update({
+                balance: (referrer.balance || 0) + 25000,
+                airdropRank: (referrer.airdropRank || 0) + 50,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', referred_by.toString());
           }
         } catch (refErr) {
           console.error("Referral reward error:", refErr);
         }
       }
 
-      user = {
+      const newUser = {
         id: idStr,
         username: username || '',
         first_name: first_name || '',
@@ -129,44 +117,75 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
         tap_value: 1,
         daily_taps: 0,
         airdropRank: 0,
-        energy: 100, // ENERGY IS NOW "DAILY TAPS LEFT"
+        energy: 1000, 
         daily_quest_states: {},
         completed_missions: [],
         upgrades: {},
-        last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
-        updated_at: admin.firestore.FieldValue.serverTimestamp(),
-        created_at: admin.firestore.FieldValue.serverTimestamp(),
+        last_claim_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       };
-      await userRef.set(user);
-    } else {
-      // Reset daily taps if it's a new day
-      const lastUpdate = user.updated_at?.toDate?.() || new Date(user.updated_at);
-      const today = new Date().toDateString();
-      const lastDate = lastUpdate.toDateString();
 
-      if (today !== lastDate) {
-        await userRef.update({
-          daily_taps: 0,
-          energy: 100, // Reset to 100 taps available
-          updated_at: admin.firestore.FieldValue.serverTimestamp()
-        });
-        user.daily_taps = 0;
-        user.energy = 100;
+      const { data: insertedUser, error: insertError } = await supabase
+        .from('users')
+        .insert([newUser])
+        .select()
+        .single();
+      
+      if (insertError) throw insertError;
+      currentUser = insertedUser;
+    } else {
+      // Logic for Day Reset and Energy Refill
+      const lastUpdate = new Date(currentUser.updated_at);
+      const todayStr = new Date().toDateString();
+      const lastDateStr = lastUpdate.toDateString();
+      
+      const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
+      let currentEnergy = currentUser.energy || 0;
+      let currentDailyTaps = currentUser.daily_taps || 0;
+
+      // refill energy +1 per sec up to 1000
+      currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
+
+      // daily taps reset
+      if (todayStr !== lastDateStr) {
+        currentDailyTaps = 0;
       }
+
+      const { data: updatedUser, error: updateError } = await supabase
+        .from('users')
+        .update({
+          energy: currentEnergy,
+          daily_taps: currentDailyTaps,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', idStr)
+        .select()
+        .single();
+      
+      if (!updateError) currentUser = updatedUser;
     }
 
-    const refSnapshot = await fdb.collection('users').where('referred_by', '==', idStr).count().get();
-    res.json({ ...user, referralCount: refSnapshot.data().count });
+    const { count, error: countError } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true })
+      .eq('referred_by', idStr);
+
+    res.json({ ...currentUser, referralCount: count || 0 });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 const grantAdReward = async (id: string) => {
-  const userRef = fdb.collection('users').doc(id);
-  const userDoc = await userRef.get();
-  if (!userDoc.exists) return null;
-  const user = userDoc.data()!;
+  const { data: user, error: fetchError } = await supabase
+    .from('users')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (fetchError || !user) return null;
+
   const questStates = user.daily_quest_states || {};
   const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
   const today = new Date().toDateString();
@@ -174,12 +193,18 @@ const grantAdReward = async (id: string) => {
   const countToday = today === lastDate ? adState.count : 0;
   if (countToday >= 10) return null;
 
-  await userRef.update({
-    balance: (user.balance || 0) + 2500,
-    airdropRank: (user.airdropRank || 0) + 15,
-    daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
-  });
-  return (await userRef.get()).data();
+  const { data: updated, error: updateError } = await supabase
+    .from('users')
+    .update({
+      balance: (user.balance || 0) + 2500,
+      airdropRank: (user.airdropRank || 0) + 15,
+      daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  return updated;
 };
 
 app.get('/api/adsgram/reward', async (req, res) => {
@@ -193,31 +218,38 @@ app.post('/api/user/sync-taps', validateTelegramData, async (req, res) => {
   try {
     const { telegramId, taps } = req.body;
     if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
-    const userRef = fdb.collection('users').doc(telegramId.toString());
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) throw new Error('User not found');
-    const user = userDoc.data()!;
+    
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', telegramId.toString())
+      .single();
 
-    // Calculate how many taps can still be done
-    const dailyLimit = 100;
-    const currentDaily = user.daily_taps || 0;
-    const available = Math.max(0, dailyLimit - currentDaily);
-    const actualTaps = Math.min(taps || 0, available);
+    if (!user) throw new Error('User not found');
+
+    const tapValue = user.tap_value || 1;
+    const actualTaps = Math.min(taps || 0, user.energy || 0);
 
     if (actualTaps <= 0 && taps > 0) {
       return res.json(user);
     }
 
-    const tapValue = user.tap_value || 1;
     const reward = actualTaps * tapValue;
 
-    await userRef.update({ 
-      balance: (user.balance || 0) + reward, 
-      energy: Math.max(0, available - actualTaps), 
-      daily_taps: currentDaily + actualTaps,
-      updated_at: admin.firestore.FieldValue.serverTimestamp() 
-    });
-    res.json((await userRef.get()).data());
+    const { data: updated, error: updateError } = await supabase
+      .from('users')
+      .update({ 
+        balance: (user.balance || 0) + reward, 
+        energy: (user.energy || 0) - actualTaps,
+        daily_taps: (user.daily_taps || 0) + actualTaps,
+        updated_at: new Date().toISOString() 
+      })
+      .eq('id', telegramId.toString())
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+    res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -227,45 +259,68 @@ app.post('/api/user/claim', validateTelegramData, async (req, res) => {
   try {
     const { telegramId } = req.body;
     if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
-    const userRef = fdb.collection('users').doc(telegramId.toString());
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) throw new Error('User not found');
-    const user = userDoc.data()!;
-    const lastClaim = user.last_claim_at?.toDate?.() || new Date(user.last_claim_at || user.created_at);
+
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', telegramId.toString())
+      .single();
+
+    if (!user) throw new Error('User not found');
+
+    const lastClaim = new Date(user.last_claim_at || user.created_at);
     const earnings = Math.floor(((Date.now() - lastClaim.getTime()) / 1000) * (user.multiplier || 0.1));
     if (earnings <= 0) return res.status(400).json({ error: 'Nothing to claim yet' });
-    await userRef.update({
-      balance: (user.balance || 0) + earnings,
-      last_claim_at: admin.firestore.FieldValue.serverTimestamp(),
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    });
-    res.json({ user: (await userRef.get()).data(), earned: earnings });
+
+    const { data: updated, error: updateError } = await supabase
+      .from('users')
+      .update({
+        balance: (user.balance || 0) + earnings,
+        last_claim_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', telegramId.toString())
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+    res.json({ user: updated, earned: earnings });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Removal of app.post('/api/user/ad-reward', ...)
 app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
   try {
     const { telegramId, questId, reward, points, type } = req.body;
     if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-    const userRef = fdb.collection('users').doc(telegramId.toString());
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) throw new Error('User not found');
-    const user = userDoc.data()!;
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', telegramId.toString())
+      .single();
+
+    if (!user) throw new Error('User not found');
 
     if (type === 'social') {
       const completed = user.completed_missions || [];
       if (completed.includes(questId)) {
         return res.status(400).json({ error: 'Already completed' });
       }
-      await userRef.update({
-        balance: (user.balance || 0) + reward,
-        airdropRank: (user.airdropRank || 0) + points,
-        completed_missions: admin.firestore.FieldValue.arrayUnion(questId)
-      });
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({
+          balance: (user.balance || 0) + reward,
+          airdropRank: (user.airdropRank || 0) + points,
+          completed_missions: [...completed, questId]
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+      return res.json(updated);
     } else {
       const questStates = user.daily_quest_states || {};
       const now = new Date();
@@ -277,14 +332,20 @@ app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
         }
       }
 
-      await userRef.update({
-        balance: (user.balance || 0) + reward,
-        airdropRank: (user.airdropRank || 0) + points,
-        daily_quest_states: { ...questStates, [questId]: now.toISOString() }
-      });
-    }
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({
+          balance: (user.balance || 0) + reward,
+          airdropRank: (user.airdropRank || 0) + points,
+          daily_quest_states: { ...questStates, [questId]: now.toISOString() }
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
 
-    res.json((await userRef.get()).data());
+      if (updateError) throw updateError;
+      return res.json(updated);
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -295,10 +356,13 @@ app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
     const { telegramId, developerId, cost, boost, upgradeType = 'income' } = req.body;
     if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-    const userRef = fdb.collection('users').doc(telegramId.toString());
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) throw new Error('User not found');
-    const user = userDoc.data()!;
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', telegramId.toString())
+      .single();
+
+    if (!user) throw new Error('User not found');
 
     if ((user.balance || 0) < cost) {
       return res.status(400).json({ error: 'Insufficient balance' });
@@ -306,23 +370,42 @@ app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {
 
     const upgrades = user.upgrades || {};
     const nextLevel = (upgrades[developerId] || 0) + 1;
-
-    const updateData: any = {
-      balance: admin.firestore.FieldValue.increment(-cost),
-      [`upgrades.${developerId}`]: nextLevel,
-      updated_at: admin.firestore.FieldValue.serverTimestamp()
-    };
+    const newUpgrades = { ...upgrades, [developerId]: nextLevel };
 
     if (upgradeType === 'tap') {
       const currentTap = user.tap_value || 1;
       if (currentTap >= 100) return res.status(400).json({ error: 'Max level reached' });
-      updateData.tap_value = admin.firestore.FieldValue.increment(boost);
-    } else {
-      updateData.multiplier = admin.firestore.FieldValue.increment(boost);
-    }
 
-    await userRef.update(updateData);
-    res.json((await userRef.get()).data());
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({
+          balance: (user.balance || 0) - cost,
+          upgrades: newUpgrades,
+          tap_value: (user.tap_value || 1) + boost,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+      return res.json(updated);
+    } else {
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({
+          balance: (user.balance || 0) - cost,
+          upgrades: newUpgrades,
+          multiplier: (user.multiplier || 0.1) + boost,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+        
+      if (updateError) throw updateError;
+      return res.json(updated);
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -339,25 +422,35 @@ app.get('/api/leaderboard', async (req, res) => {
     
     // Cache logic
     if (!leaderboardCaches[cacheKey] || now > leaderboardCaches[cacheKey].expires) {
-      const snapshot = await fdb.collection('users')
-        .orderBy(sortColumn, 'desc')
-        .limit(20)
-        .get();
+      const { data: top20, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .order(sortColumn, { ascending: false })
+        .limit(20);
+
+      if (fetchError) throw fetchError;
 
       leaderboardCaches[cacheKey] = {
-        data: snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+        data: top20 || [],
         expires: now + (15 * 60 * 1000)
       };
     }
 
     let userRank = 0;
     if (userId) {
-      const userDoc = await fdb.collection('users').doc(userId.toString()).get();
-      if (userDoc.exists) {
-        const userData = userDoc.data()!;
+      const { data: userData } = await supabase
+        .from('users')
+        .select(sortColumn)
+        .eq('id', userId.toString())
+        .single();
+
+      if (userData) {
         const userValue = userData[sortColumn] || 0;
-        const rankSnapshot = await fdb.collection('users').where(sortColumn, '>', userValue).count().get();
-        userRank = rankSnapshot.data().count + 1;
+        const { count, error: rankError } = await supabase
+          .from('users')
+          .select('*', { count: 'exact', head: true })
+          .gt(sortColumn, userValue);
+        if (!rankError) userRank = (count || 0) + 1;
       }
     }
 
