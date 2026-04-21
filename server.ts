@@ -582,13 +582,36 @@ async function startServer() {
   app.post('/api/combat/select', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, heroClass } = req.body;
-      if (!['Warrior', 'Archer', 'Mage'].includes(heroClass)) return res.status(400).json({ error: 'INVALID_CLASS' });
+      console.log(`[COMBAT-API] Hero selection requested: ${heroClass} for ${telegramId}`);
 
-      if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+      if (!['Warrior', 'Archer', 'Mage'].includes(heroClass)) {
+        return res.status(400).json({ error: 'INVALID_CLASS' });
+      }
+
+      if (!verifyUserMatch(req, telegramId)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
+
+      if (!supabase) {
+        console.error("[COMBAT-API] Supabase client not initialized.");
+        return res.status(500).json({ error: 'DATABASE_ERROR', message: 'Database connecting, try again.' });
+      }
 
       // Check if already selected
-      const { data: user, error: fetchError } = await supabase.from('users').select('hero_class').eq('id', telegramId.toString()).single();
-      if (user?.hero_class) return res.status(400).json({ error: 'ALREADY_SELECTED' });
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('hero_class, id')
+        .eq('id', telegramId.toString())
+        .single();
+
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        console.error("[COMBAT-API] Fetch error:", fetchError);
+        return res.status(500).json({ error: 'FETCH_ERROR', message: fetchError.message });
+      }
+
+      if (user?.hero_class) {
+        return res.status(400).json({ error: 'ALREADY_SELECTED' });
+      }
 
       // Initial Stats based on class
       let stats = { attack: 100, defense: 100, health: 1000 };
@@ -596,25 +619,36 @@ async function startServer() {
       if (heroClass === 'Archer') stats = { attack: 140, defense: 60, health: 800 };
       if (heroClass === 'Mage') stats = { attack: 100, defense: 120, health: 900 };
 
-      const { data: updated, error: updateError } = await supabase.from('users').update({
-        hero_class: heroClass,
-        hero_level: 0,
-        hero_attack: stats.attack,
-        hero_defense: stats.defense,
-        hero_health: stats.health,
-        arena_tier: 'Epic',
-        arena_tier_level: 1,
-        arena_stars: 0,
-        combat_matches_free: 0,
-        combat_matches_ads: 0,
-        combat_last_reset: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }).eq('id', telegramId.toString()).select().single();
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({
+          hero_class: heroClass,
+          hero_level: 0,
+          hero_attack: stats.attack,
+          hero_defense: stats.defense,
+          hero_health: stats.health,
+          arena_tier: 'Epic',
+          arena_tier_level: 1,
+          arena_stars: 0,
+          combat_matches_free: 0,
+          combat_matches_ads: 0,
+          combat_last_reset: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
 
-      if (updateError) throw updateError;
+      if (updateError) {
+        console.error("[COMBAT-API] Update error:", updateError);
+        return res.status(500).json({ error: 'UPDATE_ERROR', message: updateError.message });
+      }
+
+      console.log(`[COMBAT-API] User ${telegramId} selected ${heroClass} successfully`);
       res.json(updated);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error("[COMBAT-API] Fatal error:", err.message);
+      res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
     }
   });
 

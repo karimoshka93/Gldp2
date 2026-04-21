@@ -1347,15 +1347,23 @@ const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) => {
 
   const handleSelectClass = async (heroClass: string) => {
     try {
+      console.log(`[COMBAT] Selecting hero: ${heroClass}`);
       const res = await fetch('/api/combat/select', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-telegram-init-data': window.Telegram?.WebApp?.initData || '' },
         body: JSON.stringify({ telegramId: user.id, heroClass })
       });
       const data = await res.json();
-      if (data.id) setUser(data);
+      if (data.id) {
+        setUser(data);
+        console.log(`[COMBAT] Hero successfully selected: ${heroClass}`);
+      } else {
+        alert("Selection Failed: " + (data.error || "Unknown error"));
+        console.error("[COMBAT] Selection error:", data);
+      }
     } catch (e) {
       console.error(e);
+      alert("Network error during hero selection.");
     }
   };
 
@@ -1389,7 +1397,7 @@ const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) => {
               key={c.name}
               onClick={() => handleSelectClass(c.name)}
               className={cn(
-                "glass-card p-6 border-white/5 relative overflow-hidden group",
+                "glass-card p-6 border-white/5 relative overflow-hidden group cursor-pointer select-none",
                 c.color === 'blue' ? "bg-blue-500/5 hover:bg-blue-500/10" :
                 c.color === 'orange' ? "bg-orange-500/5 hover:bg-orange-500/10" :
                 "bg-purple-500/5 hover:bg-purple-500/10"
