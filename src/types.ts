@@ -16,6 +16,36 @@ export interface UserProfile {
   upgrades: Record<string, number>;
   updated_at: string;
   created_at: string;
+  
+  // Combat System
+  hero_class?: 'Warrior' | 'Archer' | 'Mage';
+  hero_level: number;
+  hero_attack: number;
+  hero_defense: number;
+  hero_health: number;
+  arena_tier: string;
+  arena_tier_level: number;
+  arena_stars: number;
+  activity_points: number;
+  combat_matches_free: number;
+  combat_matches_ads: number;
+  combat_last_reset?: string;
+}
+
+export interface BattleRound {
+  attacker_hp: number;
+  defender_hp: number;
+  attacker_damage: number;
+  defender_damage: number;
+  event_msg: string;
+}
+
+export interface BattleResult {
+  winner_id: string;
+  rounds: BattleRound[];
+  reward_gldp: number;
+  reward_points: number;
+  star_change: number;
 }
 
 export interface DeveloperCard {
