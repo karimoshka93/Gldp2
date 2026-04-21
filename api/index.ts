@@ -12,7 +12,22 @@ app.use(express.json());
 // Supabase Setup
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Diagnostic logging (Hidden in production, but vital for debugging)
+if (!supabaseUrl || !supabaseKey) {
+  console.error("CRITICAL: Supabase environment variables are missing!");
+} else if (!supabaseUrl.startsWith('https://')) {
+  console.error("ERROR: SUPABASE_URL is malformed (must start with https://)");
+} else if (supabaseUrl.endsWith('/')) {
+  console.warn("WARNING: SUPABASE_URL has a trailing slash. This often causes 'Invalid Path' errors.");
+}
+
+let supabase: any;
+try {
+  supabase = createClient(supabaseUrl, supabaseKey);
+} catch (err: any) {
+  console.error("Supabase Client Init Error:", err.message);
+}
 
 // Middleware to validate Telegram WebApp initData 
 const verifyTelegramInitData = (initData: string): { id: number; username?: string; first_name?: string } | null => {

@@ -14,7 +14,20 @@ const PORT = 3000;
 // Supabase Setup
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Diagnostic logging
+if (!supabaseUrl || !supabaseKey) {
+    console.error("DIAGNOSTIC: Supabase environment variables are missing in this environment.");
+} else if (supabaseUrl.endsWith('/')) {
+    console.warn("DIAGNOSTIC: SUPABASE_URL ends with a slash. This usually breaks the SDK.");
+}
+
+let supabase: any;
+try {
+    supabase = createClient(supabaseUrl, supabaseKey);
+} catch (err: any) {
+    console.error("DIAGNOSTIC: Supabase initialization failed:", err.message);
+}
 
 // Global cache for leaderboard to save quotas
 const leaderboardCaches: Record<string, { data: any[], expires: number }> = {};
