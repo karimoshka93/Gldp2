@@ -226,7 +226,9 @@ app.post('/api/combat/select', validateTelegramData, async (req, res) => {
     else if (heroClass === 'Mage') stats = { attack: 100, defense: 120, health: 900 };
     const { data } = await supabase.from('users').update({
       hero_class: heroClass, hero_level: 0, hero_attack: stats.attack, hero_defense: stats.defense, hero_health: stats.health,
-      arena_tier: 'Epic', arena_tier_level: 1, arena_stars: 0, updated_at: new Date().toISOString()
+      arena_tier: 'Epic', arena_tier_level: 1, arena_stars: 0, 
+      arena_wins: 0, arena_losses: 0, arena_score: 0,
+      updated_at: new Date().toISOString()
     }).eq('id', telegramId.toString()).select().single();
     res.json(data);
   } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -276,19 +278,98 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     for (let r = 1; r <= 6 && attackerHp > 0 && defenderHp > 0; r++) {
       let atkDmg = Math.max(5, heroAtk - (opDef / 2));
       let defDmg = Math.max(5, opAtk - (heroDef / 2));
+      let msg = `Round ${r}: Exchange of blows!`;
+
+      // Skill triggers
+      // Warrior: Shield vs Archers (15% reduction) / Recovery R3 & R6
+      if (me.hero_class === 'Warrior' && op.hero_class === 'Archer') defDmg *= 0.85;
+      if (op.hero_class === 'Warrior' && me.hero_class === 'Archer') atkDmg *= 0.85;
+
+      if (me.hero_class === 'Warrior' && (r === 3 || r === 6)) {
+        const heal = Math.floor((me.hero_health || 1000) * 0.15);
+        attackerHp = Math.min(me.hero_health || 1000, attackerHp + heal);
+        msg += ` Warrior heals ${heal}!`;
+      }
+
+      // Archer: Power vs Mage (15% buff) / Dodge R3 & R6 (15% reduction)
+      if (me.hero_class === 'Archer' && op.hero_class === 'Mage') atkDmg *= 1.15;
+      if (op.hero_class === 'Archer' && me.hero_class === 'Mage') defDmg *= 1.15;
+
+      if (me.hero_class === 'Archer' && (r === 3 || r === 6)) defDmg *= 0.85;
+      if (op.hero_class === 'Archer' && (r === 3 || r === 6)) atkDmg *= 0.85;
+
+      // Mage: 25% global Dodge / 40% Burn Warrior R1,2,3
+      if (me.hero_class === 'Mage' && Math.random() < 0.25) { defDmg = 0; msg += ` Mage dodged!`; }
+      if (op.hero_class === 'Mage' && Math.random() < 0.25) { atkDmg = 0; msg += ` Enemy Mage dodged!`; }
+
+      if (me.hero_class === 'Mage' && op.hero_class === 'Warrior' && r <= 3 && Math.random() < 0.40) {
+        const burn = Math.floor((op.hero_health || 1000) * 0.10);
+        defenderHp -= burn;
+        msg += ` Fire Burn! -${burn} HP.`;
+      }
+
       attackerHp -= defDmg; defenderHp -= atkDmg;
-      rounds.push({ attacker_hp: Math.max(0, attackerHp), defender_hp: Math.max(0, defenderHp), attacker_damage: Math.floor(atkDmg), defender_damage: Math.floor(defDmg), event_msg: `Round ${r}: Exchange!` });
+      rounds.push({ 
+        attacker_hp: Math.max(0, Math.floor(attackerHp)), 
+        defender_hp: Math.max(0, Math.floor(defenderHp)), 
+        attacker_damage: Math.floor(atkDmg), 
+        defender_damage: Math.floor(defDmg), 
+        event_msg: msg 
+      });
     }
+
     const isWin = attackerHp > defenderHp;
+    
+    // Tier and Combat Statistics logic
+    let stars = me.arena_stars || 0;
+    let tierLevel = me.arena_tier_level || 1;
+    let tier = me.arena_tier || 'Epic';
+    let wins = me.arena_wins || 0;
+    let losses = me.arena_losses || 0;
+
+    if (isWin) {
+      wins++;
+      stars++;
+      if (stars >= 5) {
+        stars = 0;
+        tierLevel++;
+        if (tierLevel > 5) {
+          tierLevel = 1;
+          if (tier === 'Epic') tier = 'Legend';
+          else if (tier === 'Legend') tier = 'Mythic';
+        }
+      }
+    } else {
+      losses++;
+      stars = Math.max(0, stars - 1);
+    }
+
+    const arenaScore = wins - losses;
+    const rewardGldp = isWin ? 5000 : 0;
+    const rewardPoints = isWin ? 10 : 3;
+
     const { data: updated } = await supabase.from('users').update({
-      balance: me.balance + (isWin ? 5000 : 0),
-      airdropRank: (me.airdropRank || 0) + (isWin ? 10 : 3),
+      balance: me.balance + rewardGldp,
+      airdropRank: (me.airdropRank || 0) + rewardPoints,
+      arena_tier: tier,
+      arena_tier_level: tierLevel,
+      arena_stars: stars,
+      arena_wins: wins,
+      arena_losses: losses,
+      arena_score: arenaScore,
       combat_matches_free: freeUsed < 10 ? freeUsed + 1 : freeUsed,
       combat_matches_ads: freeUsed >= 10 ? adsUsed + 1 : adsUsed,
       combat_last_reset: now.toISOString(),
       updated_at: new Date().toISOString()
     }).eq('id', me.id).select().single();
-    res.json({ winner_id: isWin ? me.id : op.id, rounds, user: updated });
+
+    res.json({ 
+      winner_id: isWin ? me.id : op.id, 
+      rounds, 
+      user: updated,
+      reward_gldp: rewardGldp,
+      reward_points: rewardPoints
+    });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 

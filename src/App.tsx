@@ -914,7 +914,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
   const [leaders, setLeaders] = useState<any[]>([]);
   const [userRank, setUserRank] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [sortBy, setSortBy] = useState('airdropRank');
+  const [sortBy, setSortBy] = useState('airdropRank'); // 'airdropRank' | 'multiplier' | 'arena_score'
 
   useEffect(() => {
     setLoading(true);
@@ -933,7 +933,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
 
   const getMetric = (l: any) => {
     if (sortBy === 'multiplier') return `+${Math.floor(l.multiplier * 3600)}/h`;
-    if (sortBy === 'hero_level') return `LVL ${l.hero_level || 0}`;
+    if (sortBy === 'arena_score') return `${l.arena_score || 0} NET`;
     return l.airdropRank.toLocaleString();
   };
 
@@ -981,10 +981,10 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
           Earnings
         </button>
         <button 
-          onClick={() => setSortBy('hero_level')}
+          onClick={() => setSortBy('arena_score')}
           className={cn(
             "flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-            sortBy === 'hero_level' ? "bg-white text-black shadow-lg" : "text-neutral-500"
+            sortBy === 'arena_score' ? "bg-white text-black shadow-lg" : "text-neutral-500"
           )}
         >
           Combat

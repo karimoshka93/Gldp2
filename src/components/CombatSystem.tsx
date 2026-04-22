@@ -286,21 +286,39 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
              </h2>
              <p className="text-[10px] text-neutral-500 mb-8 uppercase tracking-[0.4em] font-black">Simulation Terminates</p>
              
-             <div className="grid grid-cols-2 gap-4 mb-10">
+             <div className="grid grid-cols-2 gap-4 mb-4">
                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 shadow-inner">
                  <p className="text-[9px] text-neutral-500 uppercase font-black mb-2 tracking-widest leading-none">Yield</p>
                  <div className="flex flex-col items-center">
-                    <p className="text-2xl font-black text-white leading-none">+{battleData.reward_gldp.toLocaleString()}</p>
+                    <p className="text-2xl font-black text-white leading-none">+{battleData.reward_gldp?.toLocaleString() ?? 0}</p>
                     <p className="text-[8px] text-yellow-500 font-black uppercase mt-1 tracking-widest">GLDp</p>
                  </div>
                </div>
                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 shadow-inner">
                  <p className="text-[9px] text-neutral-500 uppercase font-black mb-2 tracking-widest leading-none">Rank Points</p>
                  <div className="flex flex-col items-center">
-                    <p className="text-2xl font-black text-white leading-none">+{isWin ? battleData.reward_points : 3}</p>
+                    <p className="text-2xl font-black text-white leading-none">+{isWin ? (battleData.reward_points ?? 10) : (battleData.reward_points ?? 3)}</p>
                     <p className="text-[8px] text-indigo-400 font-black uppercase mt-1 tracking-widest">Activity</p>
                  </div>
                </div>
+             </div>
+
+             <div className="bg-white/5 rounded-2xl p-4 border border-white/5 mb-10">
+                <p className="text-[9px] text-neutral-500 uppercase font-black mb-3 tracking-widest">Arena Progression</p>
+                <div className="flex justify-center gap-2">
+                  {[1,2,3,4,5].map(s => (
+                    <div 
+                      key={s} 
+                      className={cn(
+                        "w-5 h-2 rounded-full border border-white/10 transition-all duration-1000",
+                        s <= (battleData.user?.arena_stars || 0) ? "bg-yellow-500 border-yellow-400 shadow-[0_0_10px_#eab308]" : "bg-white/5"
+                      )}
+                    />
+                  ))}
+                </div>
+                <p className="text-[10px] text-white/40 font-black uppercase mt-3 tracking-widest">
+                  {battleData.user?.arena_tier} Sector {battleData.user?.arena_tier_level}
+                </p>
              </div>
 
              <button 
