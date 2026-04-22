@@ -415,7 +415,13 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
       </div>
 
       {/* Special Tap Upgrade Card */}
-      <div className="glass-card p-5 flex items-center justify-between group bg-yellow-500/10 border-yellow-500/30 active:bg-yellow-500/20 shadow-2xl shadow-yellow-500/5">
+      <div 
+        onClick={() => currentTapValue < 100 && handleUpgrade(tapUpgrade, true)}
+        className={cn(
+          "glass-card p-5 flex items-center justify-between group border-yellow-500/30 transition-all cursor-pointer",
+          currentTapValue >= 100 ? "bg-neutral-900/50 opacity-80" : "bg-yellow-500/10 active:bg-yellow-500/20 hover:border-yellow-500/60 shadow-2xl shadow-yellow-500/5"
+        )}
+      >
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-yellow-500/30 to-amber-500/30 flex items-center justify-center border border-yellow-500/40 shrink-0">
              <Zap className="w-8 h-8 text-yellow-500" />
@@ -428,26 +434,26 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
             </div>
           </div>
         </div>
-        <button 
-          onClick={() => handleUpgrade(tapUpgrade, true)}
-          disabled={currentTapValue >= 100}
-          className="flex flex-col items-end gap-1"
-        >
+        <div className="flex flex-col items-end gap-1">
           <div className={cn(
             "px-4 py-2 rounded-xl font-black text-xs shadow-lg transition-all",
-            currentTapValue >= 100 ? "bg-neutral-800 text-neutral-600 grayscale" : "bg-yellow-500 text-black shadow-yellow-500/20 active:scale-95"
+            currentTapValue >= 100 ? "bg-neutral-800 text-neutral-600 grayscale" : "bg-yellow-500 text-black shadow-yellow-500/20 group-active:scale-95"
           )}>
             {currentTapValue >= 100 ? "MAXED" : tapUpgrade.base_cost.toLocaleString()}
           </div>
           <span className="text-[8px] uppercase font-bold text-neutral-500 tracking-tighter">PERFORMANCE</span>
-        </button>
+        </div>
       </div>
       
       {devs.map((dev, i) => {
         const Icon = devIcons[i % devIcons.length];
         const level = user.upgrades?.[dev.id] || 0;
         return (
-          <div key={dev.id} className="glass-card p-4 flex items-center justify-between group bg-[#1e293b]/50 border-white/5 active:bg-white/5">
+          <div 
+            key={dev.id} 
+            onClick={() => handleUpgrade(dev)}
+            className="glass-card p-4 flex items-center justify-between group bg-[#1e293b]/50 border-white/5 active:bg-white/5 hover:border-indigo-500/30 transition-all cursor-pointer"
+          >
             <div className="flex items-center gap-4">
               <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 flex items-center justify-center border border-white/10 shrink-0 group-hover:from-indigo-500/40 transition-all">
                  <Icon className="w-7 h-7 text-indigo-400" />
@@ -460,15 +466,12 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
                 </div>
               </div>
             </div>
-            <button 
-              onClick={() => handleUpgrade(dev)}
-              className="flex flex-col items-end gap-1"
-            >
-              <div className="px-4 py-2 rounded-xl bg-indigo-500 text-white font-black text-xs shadow-lg shadow-indigo-500/20 active:scale-90 transition-all">
+            <div className="flex flex-col items-end gap-1">
+              <div className="px-4 py-2 rounded-xl bg-indigo-500 text-white font-black text-xs shadow-lg shadow-indigo-500/20 group-active:scale-90 transition-all">
                 {dev.base_cost.toLocaleString()}
               </div>
               <span className="text-[8px] uppercase font-bold text-neutral-500 tracking-tighter">UPGRADE</span>
-            </button>
+            </div>
           </div>
         );
       })}
