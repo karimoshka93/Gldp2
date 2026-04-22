@@ -917,24 +917,39 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
   const [sortBy, setSortBy] = useState('airdropRank'); // 'airdropRank' | 'multiplier' | 'arena_score'
 
   useEffect(() => {
+    let active = true;
     setLoading(true);
     fetch(`/api/leaderboard?sortBy=${sortBy}&userId=${user.id}`)
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error("API_ERROR");
+        return res.json();
+      })
       .then(data => {
+        if (!active) return;
         setLeaders(data.top20 || []);
         setUserRank(data.userRank || 0);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => {
+        if (!active) return;
+        console.error("[LEADERBOARD_ERROR]", err);
+        // Fallback toActivity if Combat fails (missing columns)
+        if (sortBy === 'arena_score') {
+          console.warn("Combat ranking failed, likely schema mismatch. Falling back to Activity.");
+          setSortBy('airdropRank');
+        }
+        setLoading(false);
+      });
+    return () => { active = false; };
   }, [sortBy, user.id]);
 
   const top3 = leaders.slice(0, 3);
   const rest = leaders.slice(3, 20);
 
   const getMetric = (l: any) => {
-    if (sortBy === 'multiplier') return `+${Math.floor(l.multiplier * 3600)}/h`;
+    if (sortBy === 'multiplier') return `+${Math.floor((l.multiplier || 0) * 3600)}/h`;
     if (sortBy === 'arena_score') return `${l.arena_score || 0} NET`;
-    return l.airdropRank.toLocaleString();
+    return (l.airdropRank || 0).toLocaleString();
   };
 
   return (

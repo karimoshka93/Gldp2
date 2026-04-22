@@ -130,6 +130,14 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
       setBattleData(data);
       setLoading(false);
       
+      // Update global user state immediately so balances are synced
+      if (data.user) {
+        console.log("[COMBAT] Syncing user state from battle result...");
+        setUser(data.user);
+        // Dispatch local event for components that might need a nudge
+        window.dispatchEvent(new CustomEvent('user-sync', { detail: data.user }));
+      }
+      
       // Auto-play rounds with slight delay
       let idx = 0;
       const interval = setInterval(() => {
@@ -137,12 +145,8 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
         idx++;
         if (idx >= data.rounds.length) {
           clearInterval(interval);
-          if (data.user) {
-            console.log("[COMBAT] Battle finished. Syncing state...");
-            setUser(data.user);
-          }
         }
-      }, 1800);
+      }, 1500);
 
     } catch (e: any) {
       console.error("[COMBAT] Battle simulation error:", e);
@@ -284,13 +288,13 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
              <h2 className={cn("text-5xl font-black uppercase mb-4 mt-8 tracking-tighter italic", isWin ? "gold-gradient" : "text-neutral-600")}>
                {isWin ? "Victorious" : "Defeated"}
              </h2>
-             <p className="text-[10px] text-neutral-500 mb-8 uppercase tracking-[0.4em] font-black">Simulation Terminates</p>
+             <p className="text-[10px] text-neutral-500 mb-8 uppercase tracking-[0.4em] font-black">Simulation Terminates • Syncing Account...</p>
              
              <div className="grid grid-cols-2 gap-4 mb-4">
                <div className="p-5 bg-white/5 rounded-2xl border border-white/5 shadow-inner">
                  <p className="text-[9px] text-neutral-500 uppercase font-black mb-2 tracking-widest leading-none">Yield</p>
                  <div className="flex flex-col items-center">
-                    <p className="text-2xl font-black text-white leading-none">+{battleData.reward_gldp?.toLocaleString() ?? 0}</p>
+                    <p className="text-2xl font-black text-white leading-none">+{battleData.reward_gldp?.toLocaleString() ?? '0'}</p>
                     <p className="text-[8px] text-yellow-500 font-black uppercase mt-1 tracking-widest">GLDp</p>
                  </div>
                </div>
@@ -317,7 +321,7 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
                   ))}
                 </div>
                 <p className="text-[10px] text-white/40 font-black uppercase mt-3 tracking-widest">
-                  {battleData.user?.arena_tier} Sector {battleData.user?.arena_tier_level}
+                  {battleData.user?.arena_tier || 'Epic'} Sector {battleData.user?.arena_tier_level || 1}
                 </p>
              </div>
 

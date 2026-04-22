@@ -252,6 +252,10 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const { data: op } = await supabase.from('users').select('*').eq('id', opponentId.toString()).single();
     if (!me || !op) return res.status(400).json({ error: 'MISSING_PROFILE' });
 
+    // Defensive stats check
+    const currentMeBalance = me.balance || 0;
+    const currentMeAirdropRank = me.airdropRank || 0;
+
     // Match limit checks
     const now = new Date();
     const resetDate = new Date(me.combat_last_reset || 0);
@@ -348,9 +352,9 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const rewardGldp = isWin ? 5000 : 0;
     const rewardPoints = isWin ? 10 : 3;
 
-    const { data: updated } = await supabase.from('users').update({
-      balance: me.balance + rewardGldp,
-      airdropRank: (me.airdropRank || 0) + rewardPoints,
+    const { data: updated, error: updateErr } = await supabase.from('users').update({
+      balance: currentMeBalance + rewardGldp,
+      airdropRank: currentMeAirdropRank + rewardPoints,
       arena_tier: tier,
       arena_tier_level: tierLevel,
       arena_stars: stars,
@@ -362,6 +366,11 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
       combat_last_reset: now.toISOString(),
       updated_at: new Date().toISOString()
     }).eq('id', me.id).select().single();
+
+    if (updateErr) {
+      console.error("[BATTLE_UPDATE_ERROR]", updateErr);
+      throw updateErr;
+    }
 
     res.json({ 
       winner_id: isWin ? me.id : op.id, 
