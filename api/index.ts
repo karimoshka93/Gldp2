@@ -376,14 +376,16 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const now = new Date();
     const resetDate = new Date(me.combat_last_reset || 0);
     let freeUsed = me.combat_matches_free || 0;
-    let adsUsed = me.combat_matches_ads || 0;
+    let extraCharges = me.combat_extra_charges || 0;
+    let adsWatchedToday = me.combat_daily_ads_watched || 0;
 
     if (now.toDateString() !== resetDate.toDateString()) {
       freeUsed = 0;
-      adsUsed = 0;
+      extraCharges = 0;
+      adsWatchedToday = 0;
     }
 
-    if (freeUsed >= 10 && adsUsed >= 5) {
+    if (freeUsed >= 10 && extraCharges <= 0) {
       return res.status(400).json({ error: 'LIMIT_REACHED' });
     }
 
@@ -490,7 +492,8 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
       balance: currentMeBalance + rewardGldp,
       airdropRank: currentMeAirdropRank + rewardPoints,
       combat_matches_free: freeUsed < 10 ? freeUsed + 1 : freeUsed,
-      combat_matches_ads: freeUsed >= 10 ? adsUsed + 1 : adsUsed,
+      combat_extra_charges: freeUsed >= 10 ? Math.max(0, extraCharges - 1) : extraCharges,
+      combat_daily_ads_watched: adsWatchedToday,
       combat_last_reset: now.toISOString(),
       updated_at: new Date().toISOString(),
       upgrades: {
@@ -520,6 +523,41 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
       reward_points: rewardPoints
     });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/combat/ad-reward', validateTelegramData, async (req, res) => {
+  try {
+    const { telegramId } = req.body;
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+
+    const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
+    if (!user) return res.status(404).json({ error: 'NOT_FOUND' });
+
+    const now = new Date();
+    const resetDate = new Date(user.combat_last_reset || 0);
+    let adsWatchedToday = user.combat_daily_ads_watched || 0;
+    let extraCharges = user.combat_extra_charges || 0;
+
+    if (now.toDateString() !== resetDate.toDateString()) {
+      adsWatchedToday = 0;
+      extraCharges = 0;
+    }
+
+    if (adsWatchedToday >= 5) {
+      return res.status(400).json({ error: 'LIMIT_REACHED' });
+    }
+
+    const { data: updated } = await supabase.from('users').update({
+      combat_daily_ads_watched: adsWatchedToday + 1,
+      combat_extra_charges: extraCharges + 1,
+      combat_last_reset: now.toISOString(),
+      updated_at: new Date().toISOString()
+    }).eq('id', telegramId.toString()).select().single();
+
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/user/upgrade', validateTelegramData, async (req, res) => {

@@ -82,10 +82,22 @@ export const ArenaMatchmaking = ({ user, onStartBattle }: { user: UserProfile, o
                 </div>
               </div>
               <button 
-                onClick={() => onStartBattle(op)}
-                className="px-4 py-2 bg-red-600/90 hover:bg-red-500 text-white text-[10px] font-black uppercase rounded-lg shadow-lg shadow-red-600/20 active:scale-95 transition-all border border-red-400/20"
+                onClick={() => {
+                  const free = 10 - (user.combat_matches_free || 0);
+                  const extra = user.combat_extra_charges || 0;
+                  if (free <= 0 && extra <= 0) {
+                    return alert("Warning: Energy depleted! Watch an ad or wait for daily reset.");
+                  }
+                  onStartBattle(op);
+                }}
+                className={cn(
+                  "px-4 py-2 text-white text-[10px] font-black uppercase rounded-lg shadow-lg active:scale-95 transition-all border",
+                  (10 - (user.combat_matches_free || 0) <= 0 && (user.combat_extra_charges || 0) <= 0)
+                    ? "bg-neutral-600 border-neutral-500 opacity-50 cursor-not-allowed shadow-none"
+                    : "bg-red-600/90 hover:bg-red-500 border-red-400/20 shadow-red-600/20"
+                )}
               >
-                ATTACK
+                {(10 - (user.combat_matches_free || 0) <= 0 && (user.combat_extra_charges || 0) <= 0) ? 'NO CHARGES' : 'ATTACK'}
               </button>
             </motion.div>
           ))}
@@ -512,7 +524,45 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
   };
   
   const freeMatchesLeft = 10 - (user.combat_matches_free || 0);
+  const extraCharges = user.combat_extra_charges || 0;
+  const adsWatchedToday = user.combat_daily_ads_watched || 0;
   const nextUpgradeCost = Math.floor(10000 * Math.pow(1.5, user.hero_level || 1));
+
+  const handleWatchAd = async () => {
+    if (adsWatchedToday >= 5) return alert('Daily ad limit reached!');
+    
+    const Adsgram = (window as any).Adsgram;
+    const blockId = "28171"; // Use default or from env if available
+    
+    if (!Adsgram) {
+      return alert('Ad system is not available yet. Please wait a few seconds.');
+    }
+
+    // @ts-ignore
+    const AdController = Adsgram.init({ blockId });
+    AdController.show().then(async () => {
+      try {
+        const res = await fetch('/api/combat/ad-reward', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+          },
+          body: JSON.stringify({ telegramId: user.id })
+        });
+        const data = await res.json();
+        if (data.id) {
+          setUser(data);
+          alert('Ad watched! You gained +1 Battle Charge!');
+        }
+      } catch (err) {
+        console.error("Ad reward error:", err);
+      }
+    }).catch((err: any) => {
+      console.warn("Adsgram skipped or blocked:", err);
+      alert('Ad skipped. You must watch the full ad to earn extra charges.');
+    });
+  };
 
   return (
     <div className="px-6 py-6 pb-24 space-y-6 animate-in slide-in-from-bottom-5 duration-500">
@@ -631,15 +681,30 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
            </div>
            <div className="absolute -right-4 -bottom-4 w-12 h-12 bg-blue-500/5 blur-2xl rounded-full" />
         </div>
-        <div className="glass-card p-5 bg-[#1e293b]/30 border-white/5 relative group overflow-hidden">
+        
+        <div 
+          onClick={handleWatchAd}
+          className={cn(
+            "glass-card p-5 border-white/5 relative group overflow-hidden transition-all cursor-pointer",
+            adsWatchedToday >= 5 ? "bg-[#1e293b]/30 opacity-60" : "bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-95"
+          )}
+        >
            <div className="flex items-center gap-2 mb-4">
               <Zap className="w-4 h-4 text-emerald-500 group-active:scale-125 transition-all" />
-              <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none">Ad Charges</p>
+              <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none">Extra Charges</p>
            </div>
            <div className="flex items-end justify-between">
-              <p className="text-3xl font-black text-white tracking-tighter leading-none">{5 - (user.combat_matches_ads || 0)}</p>
+              <div className="flex flex-col">
+                <p className="text-3xl font-black text-white tracking-tighter leading-none">{extraCharges}</p>
+                <p className="text-[8px] font-bold text-neutral-500 mt-1 uppercase">Watched: {adsWatchedToday}/5</p>
+              </div>
               <div className="flex flex-col items-end">
-                <span className="text-[8px] font-black px-2.5 py-1.5 bg-emerald-500/10 text-emerald-500 rounded-lg border border-emerald-500/20 uppercase tracking-widest leading-none shadow-lg">STBY</span>
+                <span className={cn(
+                  "text-[8px] font-black px-2.5 py-1.5 rounded-lg border uppercase tracking-widest leading-none shadow-lg",
+                  adsWatchedToday >= 5 ? "bg-neutral-500/10 text-neutral-500 border-white/5" : "bg-emerald-500/20 text-emerald-500 border-emerald-500/20"
+                )}>
+                  {adsWatchedToday >= 5 ? "MAXED" : "WATCH AD"}
+                </span>
               </div>
            </div>
            <div className="absolute -right-4 -bottom-4 w-12 h-12 bg-emerald-500/5 blur-2xl rounded-full" />

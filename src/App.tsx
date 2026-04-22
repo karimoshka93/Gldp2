@@ -959,6 +959,34 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
     return (l.airdropRank || 0).toLocaleString();
   };
 
+  const getReward = (rank: number) => {
+    if (sortBy === 'multiplier') {
+      if (rank === 1) return "1000 GLD";
+      if (rank === 2) return "600 GLD";
+      if (rank === 3) return "300 GLD";
+      if (rank <= 10) return "200 GLD";
+      if (rank <= 20) return "150 GLD";
+      return "100 GLD";
+    }
+    if (sortBy === 'airdropRank') {
+      if (rank === 1) return "1000 Ton";
+      if (rank === 2) return "600 Ton";
+      if (rank === 3) return "300 Ton";
+      if (rank <= 10) return "100 Ton";
+      if (rank <= 20) return "50 Ton";
+      if (rank <= 100) return "10 Ton";
+      return "";
+    }
+    if (sortBy === 'arena_score') {
+      if (rank === 1) return "1% Athena";
+      if (rank === 2) return "0.5% Athena";
+      if (rank === 3) return "0.25% Athena";
+      if (rank <= 20) return "0.10% Athena";
+      return "";
+    }
+    return "";
+  };
+
   return (
     <div className="px-4 pb-24 pt-6 space-y-6">
       {/* Announcement */}
@@ -976,7 +1004,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
               </div>
             </div>
             <p className="text-xs text-white/80 leading-relaxed">
-              Ascend ranks by completing <span className="text-yellow-500 font-bold">Quests</span>. Increase your hourly dividends by acquiring <span className="text-indigo-400 font-bold">Dev Personnel</span> in the roster.
+              Recent activity affects rank. Rewards listed are <span className="text-yellow-500 font-bold">Estimated Distributions</span> based on seasonal performance metrics.
             </p>
           </div>
         </div>
@@ -1018,7 +1046,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
       ) : (
         <>
           {/* Podium */}
-          <div className="relative flex items-end justify-center gap-2 h-60 px-2 pt-12">
+          <div className="relative flex items-end justify-center gap-2 h-64 px-2 pt-12">
             {/* 2nd Place */}
             {top3[1] && (
               <div className="flex flex-col items-center gap-2 flex-1 max-w-[100px]">
@@ -1028,9 +1056,10 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
                   </div>
                   <div className="absolute -bottom-2 -right-1 bg-slate-300 text-slate-900 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-[#0f172a]">2</div>
                 </div>
-                <div className="w-full bg-slate-800/20 rounded-t-xl h-24 flex flex-col items-center justify-center p-2 border-x border-t border-slate-300/20 text-center">
+                <div className="w-full bg-slate-800/20 rounded-t-xl h-28 flex flex-col items-center justify-center p-2 border-x border-t border-slate-300/20 text-center">
                   <p className="text-[10px] font-black truncate w-full text-white">@{top3[1].username}</p>
                   <p className="text-xs font-mono font-bold text-slate-300">{getMetric(top3[1])}</p>
+                  <p className="text-[9px] font-black text-indigo-400 mt-1 uppercase truncate w-full">{getReward(2)}</p>
                 </div>
               </div>
             )}
@@ -1047,9 +1076,10 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
                   </div>
                   <div className="absolute -bottom-2 -right-1 bg-yellow-500 text-yellow-900 text-xs font-black w-8 h-8 rounded-full flex items-center justify-center border-4 border-[#0f172a]">1</div>
                 </div>
-                <div className="w-full bg-yellow-500/10 rounded-t-2xl h-32 flex flex-col items-center justify-center p-2 border-x border-t border-yellow-500/30 text-center">
+                <div className="w-full bg-yellow-500/10 rounded-t-2xl h-36 flex flex-col items-center justify-center p-2 border-x border-t border-yellow-500/30 text-center">
                   <p className="text-xs font-black truncate w-full text-yellow-500">@{top3[0].username}</p>
                   <p className="text-sm font-mono font-black text-white">{getMetric(top3[0])}</p>
+                  <p className="text-[10px] font-black text-yellow-500 mt-1 uppercase truncate w-full">{getReward(1)}</p>
                 </div>
               </div>
             )}
@@ -1063,9 +1093,10 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
                   </div>
                   <div className="absolute -bottom-2 -right-1 bg-amber-600 text-amber-100 text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center border-2 border-[#0f172a]">3</div>
                 </div>
-                <div className="w-full bg-amber-900/10 rounded-t-xl h-20 flex flex-col items-center justify-center p-2 border-x border-t border-amber-600/20 text-center">
+                <div className="w-full bg-amber-900/10 rounded-t-xl h-24 flex flex-col items-center justify-center p-2 border-x border-t border-amber-600/20 text-center">
                   <p className="text-[10px] font-black truncate w-full text-white">@{top3[2].username}</p>
                   <p className="text-xs font-mono font-bold text-amber-600">{getMetric(top3[2])}</p>
+                  <p className="text-[9px] font-black text-indigo-400 mt-1 uppercase truncate w-full">{getReward(3)}</p>
                 </div>
               </div>
             )}
@@ -1087,7 +1118,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
                   </div>
                   <div>
                     <p className="font-bold text-sm text-white">@{l.username}</p>
-                    <p className="text-[10px] text-neutral-500 lowercase">Verified Player</p>
+                    <p className="text-[10px] text-neutral-500 lowercase font-black">{getReward(i + 4)}</p>
                   </div>
                 </div>
                 <div className="text-right">
@@ -1102,15 +1133,20 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
             <div className="fixed bottom-24 left-1/2 -translate-x-1/2 w-full max-w-sm px-4 pointer-events-none">
                <div className="glass-card p-4 bg-yellow-500 text-black border-none flex items-center justify-between shadow-2xl pointer-events-auto">
                  <div className="flex items-center gap-3">
-                   <span className="text-xs font-black">#{userRank}</span>
+                   <div className="flex flex-col items-center">
+                     <span className="text-xs font-black">#{userRank}</span>
+                     <span className="text-[8px] font-black uppercase">{getReward(userRank)}</span>
+                   </div>
                    <div className="w-8 h-8 rounded-full overflow-hidden border-2 border-black/20">
                      {user.photo_url ? <img src={user.photo_url} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center font-bold text-xs">{user.username?.[0]?.toUpperCase()}</div>}
                    </div>
                    <p className="font-black text-xs">@{user.username} (You)</p>
                  </div>
-                 <span className="font-mono font-black text-xs">
-                   {getMetric(user)}
-                 </span>
+                 <div className="text-right">
+                   <span className="font-mono font-black text-xs block">
+                     {getMetric(user)}
+                   </span>
+                 </div>
                </div>
             </div>
           )}
