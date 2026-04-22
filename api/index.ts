@@ -199,14 +199,17 @@ app.get('/api/adsgram/reward', async (req, res) => {
 app.get('/api/leaderboard', async (req, res) => {
   try {
     const { sortBy = 'airdropRank', userId } = req.query;
-    const { data } = await supabase.from('users').select('*').order(sortBy as string, { ascending: false }).limit(20);
+    let sortByField = sortBy as string;
+    if (sortByField === 'arena_score') sortByField = 'airdropRank'; // Fallback because arena_score column is missing
+
+    const { data } = await supabase.from('users').select('*').order(sortByField, { ascending: false }).limit(20);
     
     let userRank = 0;
     if (userId) {
-      const { data: userData } = await supabase.from('users').select(sortBy as string).eq('id', userId.toString()).single();
+      const { data: userData } = await supabase.from('users').select('*').eq('id', userId.toString()).single();
       if (userData) {
-        const userValue = userData[sortBy as string] || 0;
-        const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).gt(sortBy as string, userValue);
+        const userValue = userData[sortByField] || 0;
+        const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).gt(sortByField, userValue);
         userRank = (count || 0) + 1;
       }
     }
@@ -224,10 +227,13 @@ app.post('/api/combat/select', validateTelegramData, async (req, res) => {
     if (heroClass === 'Warrior') stats = { attack: 80, defense: 80, health: 1500 };
     else if (heroClass === 'Archer') stats = { attack: 140, defense: 60, health: 800 };
     else if (heroClass === 'Mage') stats = { attack: 100, defense: 120, health: 900 };
+    const upgrades = user?.upgrades || {};
     const { data } = await supabase.from('users').update({
-      hero_class: heroClass, hero_level: 0, hero_attack: stats.attack, hero_defense: stats.defense, hero_health: stats.health,
-      arena_tier: 'Epic', arena_tier_level: 1, arena_stars: 0, 
-      arena_wins: 0, arena_losses: 0, arena_score: 0,
+      hero_class: heroClass, hero_level: 1, hero_attack: stats.attack, hero_defense: stats.defense, hero_health: stats.health,
+      upgrades: {
+        ...upgrades,
+        arena: { wins: 0, losses: 0, stars: 0, tier: 'Epic', tierLevel: 1, score: 0 }
+      },
       updated_at: new Date().toISOString()
     }).eq('id', telegramId.toString()).select().single();
     res.json(data);
@@ -324,12 +330,21 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
 
     const isWin = attackerHp > defenderHp;
     
-    // Tier and Combat Statistics logic
-    let stars = me.arena_stars || 0;
-    let tierLevel = me.arena_tier_level || 1;
-    let tier = me.arena_tier || 'Epic';
-    let wins = me.arena_wins || 0;
-    let losses = me.arena_losses || 0;
+    // Initialize arena stats from upgrades if top-level columns are missing
+    const upgrades = me.upgrades || {};
+    const arena = upgrades.arena || {
+      wins: me.arena_wins || 0,
+      losses: me.arena_losses || 0,
+      stars: me.arena_stars || 0,
+      tier: me.arena_tier || 'Epic',
+      tierLevel: me.arena_tier_level || 1
+    };
+
+    let wins = arena.wins;
+    let losses = arena.losses;
+    let stars = arena.stars;
+    let tier = arena.tier;
+    let tierLevel = arena.tierLevel;
 
     if (isWin) {
       wins++;
@@ -352,20 +367,26 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const rewardGldp = isWin ? 5000 : 0;
     const rewardPoints = isWin ? 10 : 3;
 
-    const { data: updated, error: updateErr } = await supabase.from('users').update({
+    // Build update object dynamically to only include columns that likely exist
+    const updatePayload: any = {
       balance: currentMeBalance + rewardGldp,
       airdropRank: currentMeAirdropRank + rewardPoints,
-      arena_tier: tier,
-      arena_tier_level: tierLevel,
-      arena_stars: stars,
-      arena_wins: wins,
-      arena_losses: losses,
-      arena_score: arenaScore,
       combat_matches_free: freeUsed < 10 ? freeUsed + 1 : freeUsed,
       combat_matches_ads: freeUsed >= 10 ? adsUsed + 1 : adsUsed,
       combat_last_reset: now.toISOString(),
-      updated_at: new Date().toISOString()
-    }).eq('id', me.id).select().single();
+      updated_at: new Date().toISOString(),
+      upgrades: {
+        ...upgrades,
+        arena: { wins, losses, stars, tier, tierLevel, score: arenaScore }
+      }
+    };
+
+    // We also TRY to update top-level columns if they happen to exist, 
+    // but the upgrades fallback ensures the data is at least saved.
+    // However, to avoid the PostgREST error, we should NOT include columns we suspect are missing.
+    // Given the error, we'll stick to the JSON-only storage for these specific stats.
+
+    const { data: updated, error: updateErr } = await supabase.from('users').update(updatePayload).eq('id', me.id).select().single();
 
     if (updateErr) {
       console.error("[BATTLE_UPDATE_ERROR]", updateErr);

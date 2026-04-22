@@ -948,7 +948,10 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
 
   const getMetric = (l: any) => {
     if (sortBy === 'multiplier') return `+${Math.floor((l.multiplier || 0) * 3600)}/h`;
-    if (sortBy === 'arena_score') return `${l.arena_score || 0} NET`;
+    if (sortBy === 'arena_score') {
+      const score = l.arena_score ?? l.upgrades?.arena?.score ?? 0;
+      return `${score} NET`;
+    }
     return (l.airdropRank || 0).toLocaleString();
   };
 

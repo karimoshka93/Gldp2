@@ -315,13 +315,13 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
                       key={s} 
                       className={cn(
                         "w-5 h-2 rounded-full border border-white/10 transition-all duration-1000",
-                        s <= (battleData.user?.arena_stars || 0) ? "bg-yellow-500 border-yellow-400 shadow-[0_0_10px_#eab308]" : "bg-white/5"
+                        s <= (battleData.user?.upgrades?.arena?.stars ?? battleData.user?.arena_stars ?? 0) ? "bg-yellow-500 border-yellow-400 shadow-[0_0_10px_#eab308]" : "bg-white/5"
                       )}
                     />
                   ))}
                 </div>
                 <p className="text-[10px] text-white/40 font-black uppercase mt-3 tracking-widest">
-                  {battleData.user?.arena_tier || 'Epic'} Sector {battleData.user?.arena_tier_level || 1}
+                  {battleData.user?.upgrades?.arena?.tier || battleData.user?.arena_tier || 'Epic'} Sector {battleData.user?.upgrades?.arena?.tierLevel || battleData.user?.arena_tier_level || 1}
                 </p>
              </div>
 
@@ -503,8 +503,16 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
     );
   }
 
+  const arena = user.upgrades?.arena || {
+    wins: user.arena_wins || 0,
+    losses: user.arena_losses || 0,
+    stars: user.arena_stars || 0,
+    tier: user.arena_tier || 'Epic',
+    tierLevel: user.arena_tier_level || 1
+  };
+  
   const freeMatchesLeft = 10 - (user.combat_matches_free || 0);
-  const nextUpgradeCost = Math.floor(10000 * Math.pow(1.5, user.hero_level));
+  const nextUpgradeCost = Math.floor(10000 * Math.pow(1.5, user.hero_level || 1));
 
   return (
     <div className="px-6 py-6 pb-24 space-y-6 animate-in slide-in-from-bottom-5 duration-500">
@@ -530,7 +538,7 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
              {user.hero_class === 'Archer' && <Target className="w-full h-full text-orange-400 drop-shadow-[0_0_20px_rgba(249,115,22,0.6)]" />}
              {user.hero_class === 'Mage' && <Zap className="w-full h-full text-purple-400 drop-shadow-[0_0_20px_rgba(168,85,247,0.6)]" />}
              <div className="absolute bottom-0 inset-x-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent" />
-             <div className="absolute bottom-2 inset-x-0 text-center text-[10px] font-black text-white tracking-[0.2em]">IV v{user.hero_level}</div>
+             <div className="absolute bottom-2 inset-x-0 text-center text-[10px] font-black text-white tracking-[0.2em]">IV v{user.hero_level || 1}</div>
           </div>
           
           <div className="flex-1 space-y-2">
@@ -538,22 +546,22 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
                 <h3 className="text-3xl font-black text-white uppercase tracking-tighter italic leading-none">{user.hero_class}</h3>
                 <div className="bg-yellow-500/10 border border-yellow-500/30 px-3 py-1 rounded-full flex items-center gap-2">
                    <Trophy className="w-3.5 h-3.5 text-yellow-500" />
-                   <span className="text-[10px] font-black text-yellow-500 uppercase tracking-widest leading-none">MK-{user.hero_level}</span>
+                   <span className="text-[10px] font-black text-yellow-500 uppercase tracking-widest leading-none">MK-{user.hero_level || 1}</span>
                 </div>
              </div>
              
              <div className="flex items-center gap-2">
-                <p className="text-[10px] font-black text-neutral-400 uppercase tracking-[0.2em]">{user.arena_tier} SECTOR {user.arena_tier_level}</p>
+                <p className="text-[10px] font-black text-neutral-400 uppercase tracking-[0.2em]">{arena.tier} SECTOR {arena.tierLevel}</p>
              </div>
 
              <div className="flex gap-1.5 mt-4">
                 {[1,2,3,4,5].map(s => (
                   <motion.div 
                     key={s} 
-                    animate={s <= user.arena_stars ? { scale: [1, 1.2, 1], boxShadow: "0 0 10px #eab308" } : {}}
+                    animate={s <= arena.stars ? { scale: [1, 1.2, 1], boxShadow: "0 0 10px #eab308" } : {}}
                     className={cn(
                       "w-4 h-1.5 rounded-full border border-white/10 transition-all duration-500", 
-                      s <= user.arena_stars ? "bg-yellow-500 border-yellow-400 shadow-[0_0_8px_#eab308]" : "bg-white/5 opacity-30"
+                      s <= arena.stars ? "bg-yellow-500 border-yellow-400 shadow-[0_0_8px_#eab308]" : "bg-white/5 opacity-30"
                     )} 
                   />
                 ))}
