@@ -109,6 +109,40 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
+app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
+  try {
+    const { telegramId, questId, reward, points, type } = req.body;
+    const idStr = telegramId.toString();
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+    const { data: user } = await supabase.from('users').select('*').eq('id', idStr).single();
+    if (!user) throw new Error('User not found');
+
+    if (type === 'social') {
+      const completed = user.completed_missions || [];
+      if (completed.includes(questId)) return res.status(400).json({ error: 'Already completed' });
+      const { data: updated } = await supabase.from('users').update({
+        balance: (user.balance || 0) + reward,
+        airdropRank: (user.airdropRank || 0) + points,
+        completed_missions: [...completed, questId]
+      }).eq('id', idStr).select().single();
+      return res.json(updated);
+    } else {
+      const questStates = user.daily_quest_states || {};
+      const now = new Date();
+      if (questStates[questId]) {
+        const last = new Date(questStates[questId]);
+        if (last.toDateString() === now.toDateString()) return res.status(400).json({ error: 'Already done today' });
+      }
+      const { data: updated } = await supabase.from('users').update({
+        balance: (user.balance || 0) + reward,
+        airdropRank: (user.airdropRank || 0) + points,
+        daily_quest_states: { ...questStates, [questId]: now.toISOString() }
+      }).eq('id', idStr).select().single();
+      return res.json(updated);
+    }
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/user/sync-taps', validateTelegramData, async (req, res) => {
   try {
     const { telegramId, taps } = req.body;
@@ -164,9 +198,20 @@ app.get('/api/adsgram/reward', async (req, res) => {
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    const { sortBy = 'airdropRank' } = req.query;
+    const { sortBy = 'airdropRank', userId } = req.query;
     const { data } = await supabase.from('users').select('*').order(sortBy as string, { ascending: false }).limit(20);
-    res.json({ top20: data || [] });
+    
+    let userRank = 0;
+    if (userId) {
+      const { data: userData } = await supabase.from('users').select(sortBy as string).eq('id', userId.toString()).single();
+      if (userData) {
+        const userValue = userData[sortBy as string] || 0;
+        const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).gt(sortBy as string, userValue);
+        userRank = (count || 0) + 1;
+      }
+    }
+
+    res.json({ top20: data || [], userRank });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
@@ -218,6 +263,36 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
       updated_at: new Date().toISOString()
     }).eq('id', me.id).select().single();
     res.json({ winner_id: isWin ? me.id : op.id, rounds, user: updated });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/combat/upgrade', validateTelegramData, async (req, res) => {
+  try {
+    const { telegramId } = req.body;
+    if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+
+    const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
+    if (!user || !user.hero_class) return res.status(400).json({ error: 'NO_HERO' });
+    if (user.hero_level >= 100) return res.status(400).json({ error: 'MAX_LEVEL' });
+
+    const cost = Math.floor(10000 * Math.pow(1.5, user.hero_level));
+    if (user.balance < cost) return res.status(400).json({ error: 'INSUFFICIENT_FUNDS' });
+
+    let growth = { atk: 10, def: 10, hp: 100 };
+    if (user.hero_class === 'Warrior') growth = { atk: 8, def: 8, hp: 150 };
+    else if (user.hero_class === 'Archer') growth = { atk: 14, def: 6, hp: 80 };
+    else if (user.hero_class === 'Mage') growth = { atk: 10, def: 12, hp: 90 };
+
+    const { data: updated } = await supabase.from('users').update({
+      balance: user.balance - cost,
+      hero_level: user.hero_level + 1,
+      hero_attack: user.hero_attack + growth.atk,
+      hero_defense: user.hero_defense + growth.def,
+      hero_health: user.hero_health + growth.hp,
+      updated_at: new Date().toISOString()
+    }).eq('id', telegramId.toString()).select().single();
+
+    res.json(updated);
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 

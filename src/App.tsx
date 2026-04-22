@@ -933,6 +933,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
 
   const getMetric = (l: any) => {
     if (sortBy === 'multiplier') return `+${Math.floor(l.multiplier * 3600)}/h`;
+    if (sortBy === 'hero_level') return `LVL ${l.hero_level || 0}`;
     return l.airdropRank.toLocaleString();
   };
 
@@ -980,11 +981,13 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
           Earnings
         </button>
         <button 
-          disabled
-          className="flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest text-neutral-700 cursor-not-allowed group relative"
+          onClick={() => setSortBy('hero_level')}
+          className={cn(
+            "flex-1 py-3 px-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+            sortBy === 'hero_level' ? "bg-white text-black shadow-lg" : "text-neutral-500"
+          )}
         >
           Combat
-          <span className="absolute -top-1 -right-1 bg-neutral-800 text-[6px] px-1 rounded border border-white/10">SOON</span>
         </button>
       </div>
 
@@ -1084,7 +1087,7 @@ const RankingTab = ({ user }: { user: UserProfile }) => {
                    <p className="font-black text-xs">@{user.username} (You)</p>
                  </div>
                  <span className="font-mono font-black text-xs">
-                   {sortBy === 'multiplier' ? `+${Math.floor(user.multiplier * 3600)}/h` : user.airdropRank.toLocaleString()}
+                   {getMetric(user)}
                  </span>
                </div>
             </div>
