@@ -239,10 +239,15 @@ app.post('/api/combat/select', validateTelegramData, async (req, res) => {
   try {
     const { telegramId, heroClass } = req.body;
     if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+    
+    // Fetch current user first to get existing upgrades
+    const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
+    
     let stats = { attack: 100, defense: 100, health: 1000 };
     if (heroClass === 'Warrior') stats = { attack: 80, defense: 80, health: 1500 };
     else if (heroClass === 'Archer') stats = { attack: 140, defense: 60, health: 800 };
     else if (heroClass === 'Mage') stats = { attack: 100, defense: 120, health: 900 };
+    
     const upgrades = user?.upgrades || {};
     const { data } = await supabase.from('users').update({
       hero_class: heroClass, hero_level: 1, hero_attack: stats.attack, hero_defense: stats.defense, hero_health: stats.health,
@@ -261,8 +266,74 @@ app.get('/api/combat/search', validateTelegramData, async (req, res) => {
     const { userId } = req.query;
     const { data: me } = await supabase.from('users').select('*').eq('id', userId?.toString()).single();
     if (!me) return res.status(404).json({ error: 'NOT_FOUND' });
-    const { data: pool } = await supabase.from('users').select('*').neq('id', me.id).eq('hero_class', me.hero_class).limit(5);
-    res.json(pool || []);
+
+    const now = Date.now();
+    const upgrades = me.upgrades || {};
+    const combatMeta = upgrades.combat_meta || {};
+    const lastRefresh = combatMeta.last_refresh || 0;
+    const cachedOpponents = combatMeta.cached_opponents || [];
+    
+    // 3 hour cooldown (3 * 60 * 60 * 1000 = 10,800,000 ms)
+    const COOLDOWN = 3 * 60 * 60 * 1000;
+    
+    if (cachedOpponents.length > 0 && (now - lastRefresh < COOLDOWN)) {
+      return res.json(cachedOpponents);
+    }
+
+    const myArena = upgrades.arena || {};
+    const myTier = myArena.tier || me.arena_tier || 'Epic';
+    const myLevel = me.hero_level || 1;
+
+    // Advanced Matchmaking Logic: Same Tier -> Closest Level
+    // We fetch a larger pool and sort in memory for precision
+    const { data: rawPool } = await supabase.from('users')
+      .select('*')
+      .neq('id', me.id)
+      .limit(50);
+
+    if (!rawPool) return res.json([]);
+
+    const sortedPool = rawPool
+      .map(op => {
+        const opArena = op.upgrades?.arena || {};
+        const opTier = opArena.tier || op.arena_tier || 'Epic';
+        const opLevel = op.hero_level || 1;
+        
+        let score = 0;
+        // Priority 1: Same Tier
+        if (opTier === myTier) score += 1000;
+        // Priority 2: Closest Level (Lower diff is better)
+        const levelDiff = Math.abs(opLevel - myLevel);
+        score += Math.max(0, 100 - levelDiff);
+
+        return { ...op, matchScore: score };
+      })
+      .sort((a, b) => b.matchScore - a.matchScore)
+      .slice(0, 5);
+
+    // Filter out huge sensitive data before caching
+    const sanitizedPool = sortedPool.map(p => ({
+      id: p.id,
+      username: p.username,
+      photo_url: p.photo_url,
+      hero_level: p.hero_level,
+      hero_class: p.hero_class,
+      hero_health: p.hero_health,
+      arena_tier: p.upgrades?.arena?.tier || p.arena_tier || 'Epic'
+    }));
+
+    // Save refresh timestamp and cache
+    await supabase.from('users').update({
+      upgrades: {
+        ...upgrades,
+        combat_meta: {
+          last_refresh: now,
+          cached_opponents: sanitizedPool
+        }
+      }
+    }).eq('id', me.id);
+
+    res.json(sanitizedPool);
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 

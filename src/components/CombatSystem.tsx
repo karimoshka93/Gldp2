@@ -600,6 +600,22 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
              </p>
           </div>
         </button>
+
+        {/* Skill Matrix Note */}
+        <div className="mt-6 pt-6 border-t border-white/5 space-y-4">
+           <div className="flex items-center justify-between">
+              <p className="text-[10px] font-black text-neutral-500 uppercase tracking-widest">Active Skill Matrix</p>
+              <div className="text-[7px] font-black bg-indigo-500/10 text-indigo-400 px-2.5 py-1 rounded-full border border-indigo-500/20 uppercase tracking-widest leading-none">Upgradable in Future Update</div>
+           </div>
+           <div className="grid grid-cols-2 gap-3">
+              {classes.find(c => c.name === user.hero_class)?.skills.map((skill, idx) => (
+                <div key={idx} className="bg-white/5 rounded-xl p-3 border border-white/5 flex items-center gap-3 group/skill hover:bg-white/10 transition-all">
+                   <div className="w-2 h-2 rounded-full bg-cyan-500 shadow-[0_0_8px_#06b6d4] group-hover/skill:animate-ping" />
+                   <p className="text-[10px] font-black text-white/80 uppercase tracking-tight">{skill}</p>
+                </div>
+              ))}
+           </div>
+        </div>
       </div>
 
       {/* Energy Management Dashboard */}

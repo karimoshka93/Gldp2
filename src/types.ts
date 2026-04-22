@@ -13,7 +13,7 @@ export interface UserProfile {
   last_claim_at: string;
   daily_quest_states: Record<string, any>;
   completed_missions: string[];
-  upgrades: Record<string, number>;
+  upgrades: Record<string, any>;
   updated_at: string;
   created_at: string;
   
@@ -23,9 +23,12 @@ export interface UserProfile {
   hero_attack: number;
   hero_defense: number;
   hero_health: number;
-  arena_tier: string;
-  arena_tier_level: number;
-  arena_stars: number;
+  arena_tier?: string;
+  arena_tier_level?: number;
+  arena_stars?: number;
+  arena_wins?: number;
+  arena_losses?: number;
+  arena_score?: number;
   activity_points: number;
   combat_matches_free: number;
   combat_matches_ads: number;

@@ -52,6 +52,7 @@ const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: 
     { id: 'combat', icon: Sword, label: 'Battle' },
     { id: 'ranking', icon: Trophy, label: 'Ranking' },
     { id: 'missions', icon: Target, label: 'Quests' },
+    { id: 'wallet', icon: WalletIcon, label: 'Wallet' },
   ];
 
   return (
