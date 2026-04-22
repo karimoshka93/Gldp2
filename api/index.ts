@@ -250,16 +250,42 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const { data: op } = await supabase.from('users').select('*').eq('id', opponentId.toString()).single();
     if (!me || !op) return res.status(400).json({ error: 'MISSING_PROFILE' });
 
-    let attackerHp = me.hero_health, defenderHp = op.hero_health, rounds = [];
+    // Match limit checks
+    const now = new Date();
+    const resetDate = new Date(me.combat_last_reset || 0);
+    let freeUsed = me.combat_matches_free || 0;
+    let adsUsed = me.combat_matches_ads || 0;
+
+    if (now.toDateString() !== resetDate.toDateString()) {
+      freeUsed = 0;
+      adsUsed = 0;
+    }
+
+    if (freeUsed >= 10 && adsUsed >= 5) {
+      return res.status(400).json({ error: 'LIMIT_REACHED' });
+    }
+
+    let attackerHp = me.hero_health || 1000;
+    let defenderHp = op.hero_health || 1000;
+    const heroAtk = me.hero_attack || 100;
+    const heroDef = me.hero_defense || 100;
+    const opAtk = op.hero_attack || 100;
+    const opDef = op.hero_defense || 100;
+    
+    let rounds = [];
     for (let r = 1; r <= 6 && attackerHp > 0 && defenderHp > 0; r++) {
-      let atkDmg = Math.max(5, me.hero_attack - (op.hero_defense / 2));
-      let defDmg = Math.max(5, op.hero_attack - (me.hero_defense / 2));
+      let atkDmg = Math.max(5, heroAtk - (opDef / 2));
+      let defDmg = Math.max(5, opAtk - (heroDef / 2));
       attackerHp -= defDmg; defenderHp -= atkDmg;
       rounds.push({ attacker_hp: Math.max(0, attackerHp), defender_hp: Math.max(0, defenderHp), attacker_damage: Math.floor(atkDmg), defender_damage: Math.floor(defDmg), event_msg: `Round ${r}: Exchange!` });
     }
     const isWin = attackerHp > defenderHp;
     const { data: updated } = await supabase.from('users').update({
-      balance: me.balance + (isWin ? 5000 : 0), airdropRank: (me.airdropRank || 0) + (isWin ? 10 : 3),
+      balance: me.balance + (isWin ? 5000 : 0),
+      airdropRank: (me.airdropRank || 0) + (isWin ? 10 : 3),
+      combat_matches_free: freeUsed < 10 ? freeUsed + 1 : freeUsed,
+      combat_matches_ads: freeUsed >= 10 ? adsUsed + 1 : adsUsed,
+      combat_last_reset: now.toISOString(),
       updated_at: new Date().toISOString()
     }).eq('id', me.id).select().single();
     res.json({ winner_id: isWin ? me.id : op.id, rounds, user: updated });

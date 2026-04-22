@@ -194,7 +194,7 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
           <p className="text-[11px] font-black uppercase tracking-widest text-white truncate max-w-[100px]">@{user.username}</p>
           <div className="w-full max-w-[120px] bg-white/5 h-2.5 rounded-full overflow-hidden border border-white/10 shadow-inner">
              <motion.div 
-               animate={{ width: `${(currentRound?.attacker_hp ?? user.hero_health) / user.hero_health * 100}%` }}
+               animate={{ width: `${(currentRound?.attacker_hp ?? user.hero_health) / (user.hero_health || 100) * 100}%` }}
                className="h-full bg-gradient-to-r from-blue-400 to-blue-600" 
              />
           </div>
