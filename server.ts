@@ -25,6 +25,10 @@ if (!supabaseUrl || !supabaseKey) {
 let supabase: any;
 try {
     supabase = createClient(supabaseUrl, supabaseKey);
+    // Verification Heartbeat
+    supabase.from('users').select('count', { count: 'exact', head: true }).limit(1)
+        .then(() => console.log("[DATABASE] Connection Verified: Service Role Key is operational."))
+        .catch((err: any) => console.error("[DATABASE] Connection Failed. Check your keys and RLS. Error:", err.message));
 } catch (err: any) {
     console.error("DIAGNOSTIC: Supabase initialization failed:", err.message);
 }
