@@ -199,22 +199,38 @@ app.get('/api/adsgram/reward', async (req, res) => {
 app.get('/api/leaderboard', async (req, res) => {
   try {
     const { sortBy = 'airdropRank', userId } = req.query;
-    let sortByField = sortBy as string;
-    if (sortByField === 'arena_score') sortByField = 'airdropRank'; // Fallback because arena_score column is missing
+    let query = supabase.from('users').select('*');
+    
+    if (sortBy === 'arena_score') {
+      // Sort by JSON path. Some Supabase versions require string syntax.
+      // If the column doesn't exist, it might fail, so we wrap in try/catch or use fallback.
+      query = query.order('upgrades->arena->score' as any, { ascending: false });
+    } else {
+      query = query.order(sortBy as string, { ascending: false });
+    }
 
-    const { data } = await supabase.from('users').select('*').order(sortByField, { ascending: false }).limit(20);
+    const { data, error: fetchErr } = await query.limit(20);
+
+    // Fallback if JSON sort fails (some Supabase tiers/versions have issues with it)
+    let finalData = data || [];
+    if (fetchErr && sortBy === 'arena_score') {
+      console.warn("[LEADERBOARD] JSON Sort failed, falling back to airdropRank", fetchErr);
+      const { data: fallbackData } = await supabase.from('users').select('*').order('airdropRank', { ascending: false }).limit(20);
+      finalData = fallbackData || [];
+    }
     
     let userRank = 0;
     if (userId) {
       const { data: userData } = await supabase.from('users').select('*').eq('id', userId.toString()).single();
       if (userData) {
+        const sortByField = sortBy === 'arena_score' ? 'airdropRank' : (sortBy as string);
         const userValue = userData[sortByField] || 0;
         const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).gt(sortByField, userValue);
         userRank = (count || 0) + 1;
       }
     }
 
-    res.json({ top20: data || [], userRank });
+    res.json({ top20: finalData, userRank });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
