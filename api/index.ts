@@ -203,9 +203,9 @@ app.get('/api/leaderboard', async (req, res) => {
     
     if (sortBy === 'arena_score') {
       // PostgREST syntax for nested JSON sorting often works better with dot notation in some versions
-      query = query.order('upgrades->arena->score', { ascending: false });
+      query = query.order('upgrades->arena->score', { ascending: false, nullsFirst: false });
     } else {
-      query = query.order(sortBy as string, { ascending: false });
+      query = query.order(sortBy as string, { ascending: false, nullsFirst: false });
     }
 
     let { data, error: fetchErr } = await query.limit(50);
@@ -216,8 +216,8 @@ app.get('/api/leaderboard', async (req, res) => {
     
     if (sortBy === 'arena_score') {
       finalData = [...finalData].sort((a, b) => {
-        const scoreA = a.upgrades?.arena?.score ?? a.arena_score ?? 0;
-        const scoreB = b.upgrades?.arena?.score ?? b.arena_score ?? 0;
+        const scoreA = Number(a.upgrades?.arena?.score ?? a.arena_score ?? 0);
+        const scoreB = Number(b.upgrades?.arena?.score ?? b.arena_score ?? 0);
         return scoreB - scoreA; // High score first
       }).slice(0, 20);
     } else {
