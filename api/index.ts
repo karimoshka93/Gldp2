@@ -303,15 +303,20 @@ app.get('/api/combat/search', validateTelegramData, async (req, res) => {
     const myLevel = me.hero_level || 1;
 
     // Advanced Matchmaking Logic: Same Tier -> Closest Level
-    // We fetch a larger pool and sort in memory for precision
+    // We fetch a larger pool of recently active users to ensure variety
     const { data: rawPool } = await supabase.from('users')
       .select('*')
       .neq('id', me.id)
-      .limit(50);
+      .order('updated_at', { ascending: false })
+      .limit(100);
 
     if (!rawPool) return res.json([]);
 
-    const sortedPool = rawPool
+    // We take the recently active users, shuffle them slightly to avoid static lists,
+    // then apply our proximity scoring.
+    const shuffledPool = [...rawPool].sort(() => Math.random() - 0.5);
+
+    const sortedPool = shuffledPool
       .map(op => {
         const opArena = op.upgrades?.arena || {};
         const opTier = opArena.tier || op.arena_tier || 'Epic';
@@ -472,6 +477,14 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const rewardGldp = isWin ? 5000 : 0;
     const rewardPoints = isWin ? 10 : 3;
 
+    // Clear cached opponents after a battle to force a refresh 
+    // as requested (prevents farming one weak opponent).
+    const combatMeta = upgrades.combat_meta || {};
+    const updatedCombatMeta = {
+      ...combatMeta,
+      cached_opponents: [] 
+    };
+
     // Build update object dynamically to only include columns that likely exist
     const updatePayload: any = {
       balance: currentMeBalance + rewardGldp,
@@ -482,7 +495,8 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
       updated_at: new Date().toISOString(),
       upgrades: {
         ...upgrades,
-        arena: { wins, losses, stars, tier, tierLevel, score: arenaScore }
+        arena: { wins, losses, stars, tier, tierLevel, score: arenaScore },
+        combat_meta: updatedCombatMeta
       }
     };
 

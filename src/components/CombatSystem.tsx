@@ -648,6 +648,7 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
 
       {/* Opponent Radar */}
       <ArenaMatchmaking 
+        key={`matchmaking-${user.upgrades?.arena?.wins || 0}-${user.upgrades?.arena?.losses || 0}`}
         user={user} 
         onStartBattle={(op) => {
           setSelectedOpponent(op);
