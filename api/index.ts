@@ -98,17 +98,31 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
       currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
       
       const todayUTC = new Date().toISOString().split('T')[0];
-      const lastResetDate = currentUser.combat_last_reset ? new Date(currentUser.combat_last_reset) : new Date(0);
+      const lastResetDate = currentUser.combat_last_reset ? new Date(currentUser.combat_last_reset) : 
+                           (currentUser.upgrades?.combat_stats?.last_reset ? new Date(currentUser.upgrades.combat_stats.last_reset) : new Date(0));
       const lastResetUTC = lastResetDate.toISOString().split('T')[0];
 
       const updates: any = { energy: currentEnergy, updated_at: new Date().toISOString() };
       
       if (todayUTC !== lastResetUTC) {
         // Daily Reset - Non-negotiable values
+        // We use the upgrades JSON blob as a "SAFE ZONE" to avoid column missing errors
+        const existingUpgrades = currentUser.upgrades || {};
+        updates.upgrades = {
+          ...existingUpgrades,
+          combat_stats: {
+            free: 10,
+            extra: 0,
+            ads: 0,
+            last_reset: new Date().toISOString()
+          }
+        };
+        // Also try to update top-level if they exist, but JSON is our primary source of truth now
         updates.combat_matches_free = 10;
         updates.combat_extra_charges = 0;
         updates.combat_daily_ads_watched = 0;
         updates.combat_last_reset = new Date().toISOString();
+        
         updates.daily_quest_states = {};
         updates.daily_taps = 0;
       } else if (todayStr !== lastDateStr) {
@@ -118,10 +132,24 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
       const { data: updatedUser, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
       
       if (updateErr) {
-        console.warn("[SYNC_UPDATE_WARNING] Initial update failed, likely missing columns:", updateErr.message);
-        // Fallback: Just update the energy/updated_at which are known to exist
-        const safeUpdates = { energy: currentEnergy, updated_at: new Date().toISOString() };
-        const { data: safeUser } = await supabase.from('users').update(safeUpdates).eq('id', idStr).select().single();
+        console.warn("[SYNC_UPDATE_WARNING] Schema mismatch detected. Falling back to JSON-only reset strategy.");
+        // If top-level columns are missing, we ONLY update energy and the UPGRADES blob which is safe JSON
+        const safeResets = {
+          energy: currentEnergy,
+          updated_at: new Date().toISOString(),
+          daily_quest_states: todayUTC !== lastResetUTC ? {} : currentUser.daily_quest_states,
+          daily_taps: (todayUTC !== lastResetUTC || todayStr !== lastDateStr) ? 0 : currentUser.daily_taps,
+          upgrades: {
+            ...(currentUser.upgrades || {}),
+            combat_stats: todayUTC !== lastResetUTC ? {
+              free: 10,
+              extra: 0,
+              ads: 0,
+              last_reset: new Date().toISOString()
+            } : (currentUser.upgrades?.combat_stats || { free: 10, extra: 0, ads: 0 })
+          }
+        };
+        const { data: safeUser } = await supabase.from('users').update(safeResets).eq('id', idStr).select().single();
         if (safeUser) currentUser = safeUser;
       } else if (updatedUser) {
         currentUser = updatedUser;
@@ -396,14 +424,18 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const currentMeBalance = me.balance || 0;
     const currentMeAirdropRank = me.airdropRank || 0;
 
-    // Match limit checks
+    // Match limit checks - Reading from JSON Safety Zone
     const todayUTC = new Date().toISOString().split('T')[0];
-    const lastResetDate = me.combat_last_reset ? new Date(me.combat_last_reset) : new Date(0);
+    const upgrades = me.upgrades || {};
+    const combatStats = upgrades.combat_stats || {};
+    
+    const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
+                         (me.combat_last_reset ? new Date(me.combat_last_reset) : new Date(0));
     const lastResetUTC = lastResetDate.toISOString().split('T')[0];
     
-    let freeAvailable = me.combat_matches_free ?? 10;
-    let extraCharges = me.combat_extra_charges || 0;
-    let adsWatchedToday = me.combat_daily_ads_watched || 0;
+    let freeAvailable = combatStats.free ?? (me.combat_matches_free ?? 10);
+    let extraCharges = combatStats.extra ?? (me.combat_extra_charges || 0);
+    let adsWatchedToday = combatStats.ads ?? (me.combat_daily_ads_watched || 0);
 
     if (todayUTC !== lastResetUTC) {
       freeAvailable = 10;
@@ -513,21 +545,30 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
       cached_opponents: [] 
     };
 
-    // Build update object dynamically to only include columns that likely exist
+    // Build update object with JSON safety
+    const updatedCombatStats = {
+      free: freeAvailable > 0 ? freeAvailable - 1 : 0,
+      extra: freeAvailable > 0 ? extraCharges : Math.max(0, extraCharges - 1),
+      ads: adsWatchedToday,
+      last_reset: new Date().toISOString()
+    };
+
     const updatePayload: any = {
       balance: currentMeBalance + rewardGldp,
       airdropRank: currentMeAirdropRank + rewardPoints,
-      combat_matches_free: freeAvailable > 0 ? freeAvailable - 1 : 0,
-      combat_extra_charges: freeAvailable > 0 ? extraCharges : Math.max(0, extraCharges - 1),
-      combat_daily_ads_watched: adsWatchedToday,
-      combat_last_reset: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       upgrades: {
         ...upgrades,
         arena: { wins, losses, stars, tier, tierLevel, score: arenaScore },
-        combat_meta: updatedCombatMeta
+        combat_meta: updatedCombatMeta,
+        combat_stats: updatedCombatStats
       }
     };
+    
+    // Attempt top-level update for compatibility, but don't crash if columns missing
+    updatePayload.combat_matches_free = updatedCombatStats.free;
+    updatePayload.combat_extra_charges = updatedCombatStats.extra;
+    updatePayload.combat_last_reset = updatedCombatStats.last_reset;
 
     // We also TRY to update top-level columns if they happen to exist, 
     // but the upgrades fallback ensures the data is at least saved.
@@ -560,11 +601,15 @@ app.post('/api/combat/ad-reward', validateTelegramData, async (req, res) => {
     if (!user) return res.status(404).json({ error: 'NOT_FOUND' });
 
     const todayUTC = new Date().toISOString().split('T')[0];
-    const lastResetDate = user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0);
+    const upgrades = user.upgrades || {};
+    const combatStats = upgrades.combat_stats || {};
+    
+    const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
+                         (user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0));
     const lastResetUTC = lastResetDate.toISOString().split('T')[0];
     
-    let adsWatchedToday = user.combat_daily_ads_watched || 0;
-    let extraCharges = user.combat_extra_charges || 0;
+    let adsWatchedToday = combatStats.ads ?? (user.combat_daily_ads_watched || 0);
+    let extraCharges = combatStats.extra ?? (user.combat_extra_charges || 0);
 
     if (todayUTC !== lastResetUTC) {
       adsWatchedToday = 0;
@@ -576,7 +621,18 @@ app.post('/api/combat/ad-reward', validateTelegramData, async (req, res) => {
     }
 
     const now = new Date();
+    const newCombatStats = {
+      ...combatStats,
+      ads: adsWatchedToday + 1,
+      extra: extraCharges + 1,
+      last_reset: now.toISOString()
+    };
+
     const { data: updated } = await supabase.from('users').update({
+      upgrades: {
+        ...upgrades,
+        combat_stats: newCombatStats
+      },
       combat_daily_ads_watched: adsWatchedToday + 1,
       combat_extra_charges: extraCharges + 1,
       combat_last_reset: now.toISOString(),
