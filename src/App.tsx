@@ -490,7 +490,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
     { id: 'x_post', title: 'Check latest X post', reward: 2000, points: 10, type: 'social', link: 'https://x.com/DigitalGold2025' },
     { id: 'ig_post', title: 'Check latest Instagram post', reward: 2000, points: 10, type: 'social', link: 'https://instagram.com/digitalgold11' },
     { id: 'mining_gld', title: 'Mine Real GLD Network', reward: 5000, points: 25, type: 'social', link: 'https://digitalgold.com.ru' },
-    { id: 'adsgram', title: 'Watch Ads for GLDp (10/10)', reward: 2500, points: 15, type: 'ads' },
+    { id: 'adsgram', title: 'Watch Ads for GLDp (Unlimited)', reward: 2500, points: 15, type: 'ads' },
   ];
 
   // Update ad state from user profile
@@ -577,7 +577,6 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
         setClaiming(null);
       }
     } else if (m.type === 'ads') {
-      if (adCount >= 10) return alert('Daily ads limit reached!');
       if (adCooldown > 0) return alert(`Please wait ${Math.floor(adCooldown/60)}m ${adCooldown%60}s for next ad`);
 
       const Adsgram = (window as any).Adsgram;
@@ -689,7 +688,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
 
       <div className="space-y-3">
         {missions.map(m => {
-          const done = m.type === 'ads' ? adCount >= 10 : isCompleted(m.id);
+          const done = m.type !== 'ads' && isCompleted(m.id);
           const onCooldown = m.type === 'ads' && adCooldown > 0;
 
           return (
@@ -717,7 +716,7 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
                 <div>
                   <p className="text-xs font-black text-white uppercase tracking-tight">
                     {m.title}
-                    {m.type === 'ads' && ` (${adCount}/10)`}
+                    {m.type === 'ads' && ` (${adCount})`}
                   </p>
                   <div className="flex items-center gap-3 mt-1">
                     <span className="text-[10px] font-mono text-yellow-500 font-bold">+{m.reward.toLocaleString()} GLDp</span>

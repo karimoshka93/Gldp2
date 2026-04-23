@@ -288,11 +288,6 @@ async function startServer() {
     const lastDate = new Date(adState.last_ad_at || 0).toDateString();
     const countToday = today === lastDate ? adState.count : 0;
 
-    if (countToday >= 10) {
-      console.warn(`[REWARD-SYSTEM] Limit reached for ${id}`);
-      return null;
-    }
-
     const { data: updated, error: updateError } = await supabase
       .from('users')
       .update({
