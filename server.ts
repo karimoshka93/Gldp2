@@ -272,43 +272,63 @@ async function startServer() {
 
   // Unified Adsgram Reward
   const grantAdReward = async (id: string, questId: string = 'adsgram') => {
-    console.log(`[REWARD-SYSTEM] Supabase processing user: ${id} for quest: ${questId}`);
-    const { data: user, error: fetchError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', id)
-      .single();
+    try {
+      console.log(`[REWARD-SYSTEM] Processing Reward for User: ${id}, Quest: ${questId}`);
+      
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', id.toString())
+        .single();
 
-    if (fetchError || !user) return null;
+      if (fetchError || !user) {
+        console.error(`[REWARD-SYSTEM] User fetch failed for ${id}:`, fetchError?.message);
+        return null;
+      }
 
-    const questStates = user.daily_quest_states || {};
-    const adState = questStates[questId] || { count: 0, last_ad_at: 0 };
-    
-    const today = new Date().toDateString();
-    const lastDate = new Date(adState.last_ad_at || 0).toDateString();
-    const countToday = today === lastDate ? adState.count : 0;
+      const questStates = user.daily_quest_states || {};
+      const adState = questStates[questId] || { count: 0, last_ad_at: 0 };
+      
+      const today = new Date().toDateString();
+      const lastDate = new Date(adState.last_ad_at || 0).toDateString();
+      const countToday = today === lastDate ? adState.count : 0;
 
-    // Define rewards based on questId
-    let rewardGldp = 2500;
-    let rewardPoints = 15;
+      // Define rewards - Type safe conversion
+      let rewardGldp = 2500;
+      let rewardPoints = 15;
 
-    if (questId === 'adsgram_red') {
-      rewardGldp = 2000;
-      rewardPoints = 10;
+      if (questId === 'adsgram_red') {
+        rewardGldp = 2000;
+        rewardPoints = 10;
+      }
+
+      const currentBalance = Number(user.balance || 0);
+      const currentRank = Number(user.airdropRank || 0);
+
+      console.log(`[REWARD-SYSTEM] Updating balance for ${id}: ${currentBalance} -> ${currentBalance + rewardGldp}`);
+
+      const { data: updated, error: updateError } = await supabase
+        .from('users')
+        .update({
+          balance: currentBalance + rewardGldp,
+          airdropRank: currentRank + rewardPoints,
+          daily_quest_states: { ...questStates, [questId]: { count: countToday + 1, last_ad_at: Date.now() } }
+        })
+        .eq('id', id.toString())
+        .select()
+        .single();
+      
+      if (updateError) {
+        console.error(`[REWARD-SYSTEM] Update failed for ${id}:`, updateError.message);
+        return null;
+      }
+
+      console.log(`[REWARD-SYSTEM] Success! New Balance for ${id}: ${updated.balance}`);
+      return updated;
+    } catch (err: any) {
+      console.error(`[REWARD-SYSTEM] Fatal Error for ${id}:`, err.message);
+      return null;
     }
-
-    const { data: updated, error: updateError } = await supabase
-      .from('users')
-      .update({
-        balance: (user.balance || 0) + rewardGldp,
-        airdropRank: (user.airdropRank || 0) + rewardPoints,
-        daily_quest_states: { ...questStates, [questId]: { count: countToday + 1, last_ad_at: Date.now() } }
-      })
-      .eq('id', id)
-      .select()
-      .single();
-    
-    return updated;
   };
 
   app.get('/api/adsgram/reward', async (req, res) => {

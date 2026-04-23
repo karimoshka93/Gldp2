@@ -564,24 +564,29 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       // @ts-ignore
       const AdController = Adsgram.init({ blockId });
       AdController.show().then(async () => {
-        try {
-          const res = await fetch('/api/user/ad-reward', {
-            method: 'POST',
-            headers: { 
-              'Content-Type': 'application/json',
-              'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
-            },
-            body: JSON.stringify({ telegramId: user.id, questId: m.id })
-          });
-          const data = await res.json();
-          if (data.id) {
-            setUser(data);
-            alert(`Ad reward received! +${m.reward.toLocaleString()} GLDp added to your balance.`);
+        // Give a small delay for the ad overlay to clear properly
+        setTimeout(async () => {
+          try {
+            const res = await fetch('/api/user/ad-reward', {
+              method: 'POST',
+              headers: { 
+                'Content-Type': 'application/json',
+                'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+              },
+              body: JSON.stringify({ telegramId: user.id, questId: m.id })
+            });
+            const data = await res.json();
+            if (data.id) {
+              setUser(data);
+              alert('Reward Success! Balance updated.');
+            } else {
+              alert('Server confirmed the ad but reward failed to sync. Try refreshing.');
+            }
+          } catch (err) {
+            console.error("Ad reward error:", err);
+            alert('Failed to reach server. Your progress is saved, checking again.');
           }
-        } catch (err) {
-          console.error("Ad reward error:", err);
-          alert('Ad finished but reward sync failed. Please try again.');
-        }
+        }, 1000);
       }).catch((err: any) => {
         console.warn("Adsgram skipped or blocked:", err);
         if (err && err.error === 'ad_blocked') {
