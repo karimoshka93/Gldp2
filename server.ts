@@ -40,7 +40,15 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // --- API Routes ---
+  // --- Diagnostic Global Error Handler for API ---
+  app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error(`[API-ERROR] Global caught: ${err.message}`);
+    res.status(500).json({ 
+      error: 'SERVER_PROCESS_ERROR', 
+      message: 'A critical server error occurred during synchronization.',
+      details: err.message 
+    });
+  });
 
   // Health check for Render
   app.get('/healthz', (req, res) => res.send('OK'));
@@ -114,7 +122,7 @@ async function startServer() {
     return match;
   };
 
-  // Sync endpoint - Handles initial connection and energy refill with UTC Daily Reset
+  // Sync endpoint - Robust Daily Reset and Energy Refill
   app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, username, first_name, photo_url, referred_by } = req.body;
@@ -123,29 +131,14 @@ async function startServer() {
       if (!idStr) return res.status(400).json({ error: 'telegramId required' });
       if (!verifyUserMatch(req, idStr)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-      console.log(`[SYNC] Request for: ${username || 'Unknown'} (${idStr})`);
+      console.log(`[SYNC-REQUEST] Processing sync for ${idStr}`);
 
-      const { data: user, error: fetchError } = await supabase.from('users').select('*').eq('id', idStr).single();
+      let { data: user, error: fetchError } = await supabase.from('users').select('*').eq('id', idStr).single();
       if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
 
-      let currentUser = user;
-
-      // Registration logic
-      if (!currentUser) {
+      // Handle Registration
+      if (!user) {
         console.log(`[SYNC] REGISTERING NEW USER: ${idStr}`);
-        if (referred_by) {
-          try {
-            const { data: ref } = await supabase.from('users').select('balance, airdropRank').eq('id', referred_by.toString()).single();
-            if (ref) {
-              await supabase.from('users').update({
-                balance: (ref.balance || 0) + 25000,
-                airdropRank: (ref.airdropRank || 0) + 50,
-                updated_at: new Date().toISOString()
-              }).eq('id', referred_by.toString());
-            }
-          } catch (e) { console.error("Referral Error:", e); }
-        }
-
         const newUser = {
           id: idStr, username: username || '', first_name: first_name || '', photo_url: photo_url || null,
           referred_by: referred_by || null, balance: referred_by ? 5000 : 0, multiplier: 0.1,
@@ -156,66 +149,89 @@ async function startServer() {
 
         const { data: inserted, error: insertError } = await supabase.from('users').insert([newUser]).select().single();
         if (insertError) throw insertError;
-        currentUser = inserted;
+        user = inserted;
+
+        // Referrer reward (Safe)
+        if (referred_by) {
+           supabase.from('users').select('balance, airdropRank').eq('id', referred_by.toString()).single().then(({ data: ref }) => {
+             if (ref) supabase.from('users').update({ balance: (ref.balance || 0) + 25000, airdropRank: (ref.airdropRank || 0) + 50 }).eq('id', referred_by.toString()).then(() => {});
+           }).catch(() => {});
+        }
       }
 
-      // Energy recovery and Daily Reset (Strictly UTC)
-      if (currentUser) {
-        try {
-          const lastUpdate = new Date(currentUser.updated_at || currentUser.created_at || Date.now());
-          const now = new Date();
-          const todayUTC = now.toISOString().split('T')[0];
-          const todayStr = now.toDateString();
-          const lastDateStr = lastUpdate.toDateString();
+      if (!user) throw new Error("Critical registration failure.");
 
-          const diffSecs = Math.max(0, Math.floor((now.getTime() - lastUpdate.getTime()) / 1000));
-          let currentEnergy = Math.min(1000, (currentUser.energy || 0) + diffSecs);
+      // Robust Energy and Daily Reset
+      try {
+        const now = new Date();
+        const todayUTC = now.toISOString().split('T')[0];
+        const lastUpdate = new Date(user.updated_at || user.created_at || Date.now());
+        
+        // 1. Energy Refill logic
+        const diffSecs = Math.max(0, Math.floor((now.getTime() - lastUpdate.getTime()) / 1000));
+        let currentEnergy = Math.min(1000, (user.energy || 0) + diffSecs);
 
-          // Daily Reset Logic
-          const combatStats = currentUser.upgrades?.combat_stats || {};
-          const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
-                               (currentUser.combat_last_reset ? new Date(currentUser.combat_last_reset) : new Date(0));
-          const lastResetUTC = lastResetDate.toISOString().split('T')[0];
-          const isNewDay = todayUTC !== lastResetUTC;
+        // 2. Daily Reset Detection
+        const combatStats = user.upgrades?.combat_stats || {};
+        const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
+                             (user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0));
+        const lastResetUTC = lastResetDate.toISOString().split('T')[0];
+        const isNewDay = todayUTC !== lastResetUTC;
 
-          const updates: any = { energy: currentEnergy, updated_at: now.toISOString() };
+        const updates: any = { 
+          energy: currentEnergy, 
+          updated_at: now.toISOString(),
+          daily_taps: (now.toDateString() === lastUpdate.toDateString()) ? user.daily_taps : 0
+        };
 
-          if (isNewDay) {
-            // Safety Zone (JSON)
-            updates.upgrades = {
-              ...(currentUser.upgrades || {}),
-              combat_stats: { free: 10, extra: 0, ads: 0, last_reset: now.toISOString() }
-            };
-            // Redundant columns (Legacy)
-            updates.combat_matches_free = 10;
-            updates.combat_extra_charges = 0;
-            updates.combat_daily_ads_watched = 0;
-            updates.combat_last_reset = now.toISOString();
-            updates.daily_quest_states = {};
-            updates.daily_taps = 0;
-          } else if (todayStr !== lastDateStr) {
-            updates.daily_taps = 0;
-          }
+        if (isNewDay) {
+          console.log(`[SYNC-RESET] Performing daily reset for ${idStr}`);
+          updates.daily_quest_states = {};
+          updates.daily_taps = 0;
+          updates.upgrades = {
+            ...(user.upgrades || {}),
+            combat_stats: { free: 10, extra: 0, ads: 0, last_reset: now.toISOString() }
+          };
+          // Try to update legacy columns if they exist
+          updates.combat_matches_free = 10;
+          updates.combat_extra_charges = 0;
+          updates.combat_daily_ads_watched = 0;
+          updates.combat_last_reset = now.toISOString();
+        }
 
-          const { data: updated, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
+        const { data: updated, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
+        
+        if (updateErr) {
+          console.warn(`[SYNC-WARN] Column-safe fallback update triggered for ${idStr}`);
+          // Fallback logic if columns don't exist
+          const fallbackUpdates: any = { 
+            energy: currentEnergy, 
+            updated_at: now.toISOString(),
+            upgrades: updates.upgrades || user.upgrades
+          };
+          if (isNewDay) fallbackUpdates.daily_quest_states = {};
           
-          if (updateErr) {
-            // Minimal fallback if columns missing
-            const fallback = { energy: currentEnergy, updated_at: now.toISOString(), upgrades: updates.upgrades || currentUser.upgrades };
-            const { data: safe } = await supabase.from('users').update(fallback).eq('id', idStr).select().single();
-            if (safe) currentUser = safe;
-          } else if (updated) {
-            currentUser = updated;
-          }
-        } catch (procErr) { console.error("[SYNC] Process Error:", procErr); }
+          const { data: safe } = await supabase.from('users').update(fallbackUpdates).eq('id', idStr).select().single();
+          if (safe) user = safe;
+        } else if (updated) {
+          user = updated;
+        }
+      } catch (procErr: any) {
+        console.error(`[SYNC-PROC-ERR] Continuing with stale data: ${procErr.message}`);
       }
 
-      const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
-      res.json({ ...currentUser, referralCount: count || 0 });
+      // Referral Count (Separate to avoid failures)
+      let referralCount = 0;
+      try {
+        const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
+        referralCount = count || 0;
+      } catch (e) {}
+
+      res.json({ ...user, referralCount });
 
     } catch (err: any) {
-      console.error('[SYNC] Fatal:', err.message);
-      res.status(500).json({ error: 'Sync failed: ' + err.message });
+      console.error(`[SYNC-FATAL] Unhandled: ${err.message}`);
+      res.status(500).json({ error: 'SYNC_FATAL', message: err.message });
     }
   });
 
