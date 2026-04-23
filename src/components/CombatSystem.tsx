@@ -83,8 +83,9 @@ export const ArenaMatchmaking = ({ user, onStartBattle }: { user: UserProfile, o
               </div>
               <button 
                 onClick={() => {
-                  const free = combatStats.free ?? (user.combat_matches_free ?? 10);
-                  const extra = combatStats.extra ?? (user.combat_extra_charges || 0);
+                  const stats = user.upgrades?.combat_stats || {};
+                  const free = stats.free ?? (user.combat_matches_free ?? 10);
+                  const extra = stats.extra ?? (user.combat_extra_charges || 0);
                   if (free <= 0 && extra <= 0) {
                     return alert("Warning: Energy depleted! Watch an ad or wait for daily reset.");
                   }
@@ -92,12 +93,14 @@ export const ArenaMatchmaking = ({ user, onStartBattle }: { user: UserProfile, o
                 }}
                 className={cn(
                   "px-4 py-2 text-white text-[10px] font-black uppercase rounded-lg shadow-lg active:scale-95 transition-all border",
-                  (freeMatchesLeft <= 0 && extraCharges <= 0)
+                  ((user.upgrades?.combat_stats?.free ?? (user.combat_matches_free ?? 10)) <= 0 && 
+                   (user.upgrades?.combat_stats?.extra ?? (user.combat_extra_charges || 0)) <= 0)
                     ? "bg-neutral-600 border-neutral-500 opacity-50 cursor-not-allowed shadow-none"
                     : "bg-red-600/90 hover:bg-red-500 border-red-400/20 shadow-red-600/20"
                 )}
               >
-                {(freeMatchesLeft <= 0 && extraCharges <= 0) ? 'NO CHARGES' : 'ATTACK'}
+                {((user.upgrades?.combat_stats?.free ?? (user.combat_matches_free ?? 10)) <= 0 && 
+                  (user.upgrades?.combat_stats?.extra ?? (user.combat_extra_charges || 0)) <= 0) ? 'NO CHARGES' : 'ATTACK'}
               </button>
             </motion.div>
           ))}
@@ -714,7 +717,6 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
 
       {/* Opponent Radar */}
       <ArenaMatchmaking 
-        key={`matchmaking-${user.upgrades?.arena?.wins || 0}-${user.upgrades?.arena?.losses || 0}`}
         user={user} 
         onStartBattle={(op) => {
           setSelectedOpponent(op);
