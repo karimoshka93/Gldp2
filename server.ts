@@ -138,6 +138,37 @@ async function startServer() {
         throw fetchError;
       }
 
+      if (user) {
+        const now = new Date();
+        const last = user.combat_last_reset
+          ? new Date(user.combat_last_reset)
+          : null;
+
+        if (
+          !last ||
+          last.getFullYear() !== now.getFullYear() ||
+          last.getMonth() !== now.getMonth() ||
+          last.getDate() !== now.getDate()
+        ) {
+          user.daily_taps = 0;
+          user.combat_matches_free = 5;
+          user.combat_matches_ads = 3;
+          user.combat_daily_ads_watched = 0;
+          user.daily_quest_states = {};
+          user.combat_last_reset = now.toISOString();
+          
+          await supabase.from('users').update({
+            daily_taps: user.daily_taps,
+            combat_matches_free: user.combat_matches_free,
+            combat_matches_ads: user.combat_matches_ads,
+            combat_daily_ads_watched: user.combat_daily_ads_watched,
+            daily_quest_states: user.daily_quest_states,
+            combat_last_reset: user.combat_last_reset,
+            updated_at: now.toISOString()
+          }).eq('id', idStr);
+        }
+      }
+
       let currentUser = user;
 
       if (!currentUser) {
@@ -209,11 +240,6 @@ async function startServer() {
 
         // refill energy +1 per sec up to 1000
         currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
-
-        // daily taps reset
-        if (todayStr !== lastDateStr) {
-          currentDailyTaps = 0;
-        }
 
         if (currentEnergy !== currentUser.energy || currentDailyTaps !== currentUser.daily_taps) {
           const { data: updatedUser, error: updateError } = await supabase
@@ -310,6 +336,25 @@ async function startServer() {
         .single();
         
       if (!user) throw new Error('User not found');
+
+      const now = new Date();
+      const last = user.combat_last_reset
+        ? new Date(user.combat_last_reset)
+        : null;
+
+      if (
+        !last ||
+        last.getFullYear() !== now.getFullYear() ||
+        last.getMonth() !== now.getMonth() ||
+        last.getDate() !== now.getDate()
+      ) {
+        user.daily_taps = 0;
+        user.combat_matches_free = 5;
+        user.combat_matches_ads = 3;
+        user.combat_daily_ads_watched = 0;
+        user.daily_quest_states = {};
+        user.combat_last_reset = now.toISOString();
+      }
 
       if (type === 'social') {
         const completed = user.completed_missions || [];
@@ -740,8 +785,26 @@ async function startServer() {
 
       if (!me || !op) return res.status(400).json({ error: 'MISSING_PROFILE' });
 
-      // Match limit checks
       const now = new Date();
+      const last = me.combat_last_reset
+        ? new Date(me.combat_last_reset)
+        : null;
+
+      if (
+        !last ||
+        last.getFullYear() !== now.getFullYear() ||
+        last.getMonth() !== now.getMonth() ||
+        last.getDate() !== now.getDate()
+      ) {
+        me.daily_taps = 0;
+        me.combat_matches_free = 5;
+        me.combat_matches_ads = 3;
+        me.combat_daily_ads_watched = 0;
+        me.daily_quest_states = {};
+        me.combat_last_reset = now.toISOString();
+      }
+
+      // Match limit checks
       const resetDate = new Date(me.combat_last_reset || 0);
       let freeUsed = me.combat_matches_free || 0;
       let adsUsed = me.combat_matches_ads || 0;
