@@ -97,13 +97,15 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
       let currentEnergy = currentUser.energy || 0;
       currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
       
+      const todayUTC = new Date().toISOString().split('T')[0];
+      const lastResetDate = currentUser.combat_last_reset ? new Date(currentUser.combat_last_reset) : new Date(0);
+      const lastResetUTC = lastResetDate.toISOString().split('T')[0];
+
       const updates: any = { energy: currentEnergy, updated_at: new Date().toISOString() };
       
-      const combatResetDate = new Date(currentUser.combat_last_reset || 0);
-      const isNewDay = todayStr !== combatResetDate.toDateString();
-
-      if (isNewDay) {
-        updates.combat_matches_free = 0;
+      if (todayUTC !== lastResetUTC) {
+        // Daily Reset - Non-negotiable values
+        updates.combat_matches_free = 10;
         updates.combat_extra_charges = 0;
         updates.combat_daily_ads_watched = 0;
         updates.combat_last_reset = new Date().toISOString();
@@ -395,19 +397,21 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const currentMeAirdropRank = me.airdropRank || 0;
 
     // Match limit checks
-    const now = new Date();
-    const resetDate = new Date(me.combat_last_reset || 0);
-    let freeUsed = me.combat_matches_free || 0;
+    const todayUTC = new Date().toISOString().split('T')[0];
+    const lastResetDate = me.combat_last_reset ? new Date(me.combat_last_reset) : new Date(0);
+    const lastResetUTC = lastResetDate.toISOString().split('T')[0];
+    
+    let freeAvailable = me.combat_matches_free ?? 10;
     let extraCharges = me.combat_extra_charges || 0;
     let adsWatchedToday = me.combat_daily_ads_watched || 0;
 
-    if (now.toDateString() !== resetDate.toDateString()) {
-      freeUsed = 0;
+    if (todayUTC !== lastResetUTC) {
+      freeAvailable = 10;
       extraCharges = 0;
       adsWatchedToday = 0;
     }
 
-    if (freeUsed >= 10 && extraCharges <= 0) {
+    if (freeAvailable <= 0 && extraCharges <= 0) {
       return res.status(400).json({ error: 'LIMIT_REACHED' });
     }
 
@@ -513,10 +517,10 @@ app.post('/api/combat/battle', validateTelegramData, async (req, res) => {
     const updatePayload: any = {
       balance: currentMeBalance + rewardGldp,
       airdropRank: currentMeAirdropRank + rewardPoints,
-      combat_matches_free: freeUsed < 10 ? freeUsed + 1 : freeUsed,
-      combat_extra_charges: freeUsed >= 10 ? Math.max(0, extraCharges - 1) : extraCharges,
+      combat_matches_free: freeAvailable > 0 ? freeAvailable - 1 : 0,
+      combat_extra_charges: freeAvailable > 0 ? extraCharges : Math.max(0, extraCharges - 1),
       combat_daily_ads_watched: adsWatchedToday,
-      combat_last_reset: now.toISOString(),
+      combat_last_reset: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       upgrades: {
         ...upgrades,
@@ -555,12 +559,14 @@ app.post('/api/combat/ad-reward', validateTelegramData, async (req, res) => {
     const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
     if (!user) return res.status(404).json({ error: 'NOT_FOUND' });
 
-    const now = new Date();
-    const resetDate = new Date(user.combat_last_reset || 0);
+    const todayUTC = new Date().toISOString().split('T')[0];
+    const lastResetDate = user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0);
+    const lastResetUTC = lastResetDate.toISOString().split('T')[0];
+    
     let adsWatchedToday = user.combat_daily_ads_watched || 0;
     let extraCharges = user.combat_extra_charges || 0;
 
-    if (now.toDateString() !== resetDate.toDateString()) {
+    if (todayUTC !== lastResetUTC) {
       adsWatchedToday = 0;
       extraCharges = 0;
     }
@@ -569,11 +575,12 @@ app.post('/api/combat/ad-reward', validateTelegramData, async (req, res) => {
       return res.status(400).json({ error: 'LIMIT_REACHED' });
     }
 
+    const now = new Date();
     const { data: updated } = await supabase.from('users').update({
       combat_daily_ads_watched: adsWatchedToday + 1,
       combat_extra_charges: extraCharges + 1,
       combat_last_reset: now.toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: now.toISOString()
     }).eq('id', telegramId.toString()).select().single();
 
     res.json(updated);
