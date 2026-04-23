@@ -481,24 +481,14 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
 
 const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, referralCount: number, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>> }) => {
   const [claiming, setClaiming] = useState<string | null>(null);
-  const [adCount, setAdCount] = useState(0);
 
   const missions: Mission[] = [
+    { id: 'adsgram_red', title: 'PREMIUM Ad Reward (Unlimited)', reward: 2000, points: 10, type: 'ads' },
     { id: 'daily_login', title: 'Daily Login Reward', reward: 1000, points: 5, type: 'daily' },
     { id: 'tg_post', title: 'Check latest Telegram post', reward: 2000, points: 10, type: 'social', link: 'https://t.me/digitalgold2025' },
-    { id: 'x_post', title: 'Check latest X post', reward: 2000, points: 10, type: 'social', link: 'https://x.com/DigitalGold2025' },
     { id: 'ig_post', title: 'Check latest Instagram post', reward: 2000, points: 10, type: 'social', link: 'https://instagram.com/digitalgold11' },
     { id: 'mining_gld', title: 'Mine Real GLD Network', reward: 5000, points: 25, type: 'social', link: 'https://digitalgold.com.ru' },
-    { id: 'adsgram', title: 'Watch Ads for GLDp (Unlimited)', reward: 2500, points: 15, type: 'ads' },
   ];
-
-  // Update ad state from user profile
-  useEffect(() => {
-    if (user.daily_quest_states?.adsgram) {
-      const { count } = user.daily_quest_states.adsgram;
-      setAdCount(count || 0);
-    }
-  }, [user.daily_quest_states]);
 
   const handleQuestAction = async (m: Mission) => {
     if (claiming) return;
@@ -581,12 +571,12 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
               'Content-Type': 'application/json',
               'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
             },
-            body: JSON.stringify({ telegramId: user.id })
+            body: JSON.stringify({ telegramId: user.id, questId: m.id })
           });
           const data = await res.json();
           if (data.id) {
             setUser(data);
-            alert('Ad reward received! +2,500 GLDp added to your balance.');
+            alert(`Ad reward received! +${m.reward.toLocaleString()} GLDp added to your balance.`);
           }
         } catch (err) {
           console.error("Ad reward error:", err);
@@ -666,6 +656,8 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       <div className="space-y-3">
         {missions.map(m => {
           const done = m.type !== 'ads' && isCompleted(m.id);
+          const isRedAd = m.id === 'adsgram_red';
+          const currentCount = user.daily_quest_states?.[m.id]?.count || 0;
 
           return (
             <motion.div 
@@ -674,25 +666,32 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
               onClick={() => !done && (!claiming || claiming === m.id) && handleQuestAction(m)}
               className={cn(
                 "glass-card p-5 flex items-center justify-between border-white/5 transition-all",
-                done ? "opacity-50 grayscale bg-white/5 cursor-not-allowed" : "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
+                done ? "opacity-50 grayscale bg-white/5 cursor-not-allowed" : 
+                isRedAd ? "bg-red-500/10 hover:bg-red-500/20 shadow-lg shadow-red-500/10 border-red-500/30" : 
+                "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
                 claiming === m.id && "animate-pulse border-blue-500/50"
               )}
             >
               <div className="flex items-center gap-4">
                 <div className={cn(
                   "p-3 rounded-xl",
+                  isRedAd ? "bg-red-500/20 text-red-500" :
                   m.type === 'daily' ? "bg-blue-500/10 text-blue-400" :
                   m.type === 'social' ? "bg-purple-500/10 text-purple-400" :
                   "bg-orange-500/10 text-orange-400"
                 )}>
-                   {m.type === 'daily' ? <Clock className="w-5 h-5" /> : 
+                   {isRedAd ? <Cpu className="w-5 h-5 animate-pulse" /> :
+                    m.type === 'daily' ? <Clock className="w-5 h-5" /> : 
                     m.type === 'social' ? <Target className="w-5 h-5" /> : 
                     <Cpu className="w-5 h-5" />}
                 </div>
                 <div>
-                  <p className="text-xs font-black text-white uppercase tracking-tight">
+                  <p className={cn(
+                    "text-xs font-black uppercase tracking-tight",
+                    isRedAd ? "text-red-500" : "text-white"
+                  )}>
                     {m.title}
-                    {m.type === 'ads' && ` (${adCount})`}
+                    {m.type === 'ads' && ` (${currentCount})`}
                   </p>
                   <div className="flex items-center gap-3 mt-1">
                     <span className="text-[10px] font-mono text-yellow-500 font-bold">+{m.reward.toLocaleString()} GLDp</span>

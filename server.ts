@@ -271,8 +271,8 @@ async function startServer() {
   });
 
   // Unified Adsgram Reward
-  const grantAdReward = async (id: string) => {
-    console.log(`[REWARD-SYSTEM] Supabase processing user: ${id}`);
+  const grantAdReward = async (id: string, questId: string = 'adsgram') => {
+    console.log(`[REWARD-SYSTEM] Supabase processing user: ${id} for quest: ${questId}`);
     const { data: user, error: fetchError } = await supabase
       .from('users')
       .select('*')
@@ -282,18 +282,27 @@ async function startServer() {
     if (fetchError || !user) return null;
 
     const questStates = user.daily_quest_states || {};
-    const adState = questStates.adsgram || { count: 0, last_ad_at: 0 };
+    const adState = questStates[questId] || { count: 0, last_ad_at: 0 };
     
     const today = new Date().toDateString();
     const lastDate = new Date(adState.last_ad_at || 0).toDateString();
     const countToday = today === lastDate ? adState.count : 0;
 
+    // Define rewards based on questId
+    let rewardGldp = 2500;
+    let rewardPoints = 15;
+
+    if (questId === 'adsgram_red') {
+      rewardGldp = 2000;
+      rewardPoints = 10;
+    }
+
     const { data: updated, error: updateError } = await supabase
       .from('users')
       .update({
-        balance: (user.balance || 0) + 2500,
-        airdropRank: (user.airdropRank || 0) + 15,
-        daily_quest_states: { ...questStates, adsgram: { count: countToday + 1, last_ad_at: Date.now() } }
+        balance: (user.balance || 0) + rewardGldp,
+        airdropRank: (user.airdropRank || 0) + rewardPoints,
+        daily_quest_states: { ...questStates, [questId]: { count: countToday + 1, last_ad_at: Date.now() } }
       })
       .eq('id', id)
       .select()
@@ -304,23 +313,24 @@ async function startServer() {
 
   app.get('/api/adsgram/reward', async (req, res) => {
     const userid = req.query.userid || req.query.userId || req.query.user_id;
-    console.log(`[ADSGRAM-WEBHOOK] Firebase ping received for user: ${userid}`);
+    const questId = req.query.questId?.toString() || 'adsgram';
+    console.log(`[ADSGRAM-WEBHOOK] Firebase ping received for user: ${userid} quest: ${questId}`);
     
     if (!userid) {
       console.warn('[ADSGRAM-WEBHOOK] Missing userid parameter in request');
       return res.status(400).send('missing userid');
     }
     
-    const success = await grantAdReward(userid.toString());
+    const success = await grantAdReward(userid.toString(), questId);
     res.send(success ? 'ok' : 'error');
   });
 
   app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
     try {
-      const { telegramId } = req.body;
+      const { telegramId, questId } = req.body;
       if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
       
-      const updated = await grantAdReward(telegramId.toString());
+      const updated = await grantAdReward(telegramId.toString(), questId || 'adsgram');
       if (updated) {
         res.json(updated);
       } else {
