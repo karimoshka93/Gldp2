@@ -574,32 +574,24 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       // @ts-ignore
       const AdController = Adsgram.init({ blockId });
       AdController.show().then(async () => {
-        // Success - Wait a second for S2S to potentially finish if using S2S
-        // Then re-sync user profile to reflect the reward
-        setTimeout(async () => {
-          try {
-            const res = await fetch('/api/user/sync', {
-              method: 'POST',
-              headers: { 
-                'Content-Type': 'application/json',
-                'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
-              },
-              body: JSON.stringify({ 
-                telegramId: user.id,
-                username: user.username,
-                first_name: user.first_name,
-                photo_url: user.photo_url
-              })
-            });
-            const data = await res.json();
-            if (data.id) {
-              setUser(data);
-              alert('Ad watched! Your balance will be updated shortly via verified reward.');
-            }
-          } catch (err) {
-            console.error("Sync error:", err);
+        try {
+          const res = await fetch('/api/user/ad-reward', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'x-telegram-init-data': window.Telegram?.WebApp?.initData || ''
+            },
+            body: JSON.stringify({ telegramId: user.id })
+          });
+          const data = await res.json();
+          if (data.id) {
+            setUser(data);
+            alert('Ad reward received! +2,500 GLDp added to your balance.');
           }
-        }, 3000); // 3 second delay to let S2S finish
+        } catch (err) {
+          console.error("Ad reward error:", err);
+          alert('Ad finished but reward sync failed. Please try again.');
+        }
       }).catch((err: any) => {
         console.warn("Adsgram skipped or blocked:", err);
         if (err && err.error === 'ad_blocked') {

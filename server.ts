@@ -315,6 +315,22 @@ async function startServer() {
     res.send(success ? 'ok' : 'error');
   });
 
+  app.post('/api/user/ad-reward', validateTelegramData, async (req, res) => {
+    try {
+      const { telegramId } = req.body;
+      if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+      
+      const updated = await grantAdReward(telegramId.toString());
+      if (updated) {
+        res.json(updated);
+      } else {
+        res.status(400).json({ error: 'Reward failed or limit reached' });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/user/complete-quest', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, questId, reward, points, type } = req.body;
@@ -919,21 +935,34 @@ async function startServer() {
     }
   });
 
-  // Combat Ad Reset (Uses Adsgram logic)
-  app.post('/api/combat/ad-match', validateTelegramData, async (req, res) => {
-      // Typically verified by webhook, but we allow client triggering if verified via Adsgram SDK locally
-      try {
-          const { telegramId } = req.body;
-          if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
+  // Combat Ad Reward (Gives extra charges)
+  app.post('/api/combat/ad-reward', validateTelegramData, async (req, res) => {
+    try {
+      const { telegramId } = req.body;
+      if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-          const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
-          if (!user) return res.status(404).send('Not found');
+      const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
+      if (!user) return res.status(404).send('Not found');
 
-          // We don't increment here, we wait for the battle to burn the match, 
-          // or we can increment extra matches pool.
-          // For simplicity, battle simulation handles the count check.
-          res.json({ status: 'ok' });
-      } catch (err) { res.status(500).send('error'); }
+      const adsWatchedToday = (user.combat_daily_ads_watched || 0) + 1;
+      const extraCharges = (user.combat_extra_charges || 0) + 1;
+
+      const { data: updated, error } = await supabase
+        .from('users')
+        .update({
+          combat_daily_ads_watched: adsWatchedToday,
+          combat_extra_charges: extraCharges,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', telegramId.toString())
+        .select()
+        .single();
+
+      if (error) throw error;
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // --- End Combat System APIs ---
