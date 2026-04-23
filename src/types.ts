@@ -31,7 +31,8 @@ export interface UserProfile {
   arena_score?: number;
   activity_points: number;
   combat_matches_free: number;
-  combat_matches_ads: number;
+  combat_matches_ads: number; // legacy/other
+  combat_extra_charges?: number;
   combat_daily_ads_watched?: number;
   combat_last_reset?: string;
 }

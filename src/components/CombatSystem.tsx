@@ -83,8 +83,8 @@ export const ArenaMatchmaking = ({ user, onStartBattle }: { user: UserProfile, o
               </div>
               <button 
                 onClick={() => {
-                  const free = user.combat_matches_free ?? 10;
-                  const extra = user.combat_matches_ads || 0;
+                  const free = 10 - (user.combat_matches_free || 0);
+                  const extra = user.combat_extra_charges || 0;
                   if (free <= 0 && extra <= 0) {
                     return alert("Warning: Energy depleted! Watch an ad or wait for daily reset.");
                   }
@@ -92,14 +92,12 @@ export const ArenaMatchmaking = ({ user, onStartBattle }: { user: UserProfile, o
                 }}
                 className={cn(
                   "px-4 py-2 text-white text-[10px] font-black uppercase rounded-lg shadow-lg active:scale-95 transition-all border",
-                  ((user.combat_matches_free ?? 10) <= 0 && 
-                   (user.combat_matches_ads || 0) <= 0)
+                  (10 - (user.combat_matches_free || 0) <= 0 && (user.combat_extra_charges || 0) <= 0)
                     ? "bg-neutral-600 border-neutral-500 opacity-50 cursor-not-allowed shadow-none"
                     : "bg-red-600/90 hover:bg-red-500 border-red-400/20 shadow-red-600/20"
                 )}
               >
-                {((user.combat_matches_free ?? 10) <= 0 && 
-                  (user.combat_matches_ads || 0) <= 0) ? 'NO CHARGES' : 'ATTACK'}
+                {(10 - (user.combat_matches_free || 0) <= 0 && (user.combat_extra_charges || 0) <= 0) ? 'NO CHARGES' : 'ATTACK'}
               </button>
             </motion.div>
           ))}
@@ -329,13 +327,13 @@ export const BattleArena = ({ user, opponent, onFinish, setUser }: { user: UserP
                       key={s} 
                       className={cn(
                         "w-5 h-2 rounded-full border border-white/10 transition-all duration-1000",
-                        s <= (battleData.user?.arena_stars ?? 0) ? "bg-yellow-500 border-yellow-400 shadow-[0_0_10px_#eab308]" : "bg-white/5"
+                        s <= (battleData.user?.upgrades?.arena?.stars ?? battleData.user?.arena_stars ?? 0) ? "bg-yellow-500 border-yellow-400 shadow-[0_0_10px_#eab308]" : "bg-white/5"
                       )}
                     />
                   ))}
                 </div>
                 <p className="text-[10px] text-white/40 font-black uppercase mt-3 tracking-widest">
-                  {battleData.user?.arena_tier || 'Epic'} Sector {battleData.user?.arena_tier_level || 1}
+                  {battleData.user?.upgrades?.arena?.tier || battleData.user?.arena_tier || 'Epic'} Sector {battleData.user?.upgrades?.arena?.tierLevel || battleData.user?.arena_tier_level || 1}
                 </p>
              </div>
 
@@ -517,7 +515,7 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
     );
   }
 
-  const arena = {
+  const arena = user.upgrades?.arena || {
     wins: user.arena_wins || 0,
     losses: user.arena_losses || 0,
     stars: user.arena_stars || 0,
@@ -525,10 +523,10 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
     tierLevel: user.arena_tier_level || 1
   };
   
-  const freeMatchesLeft = user.combat_matches_free ?? 10;
-  const extraCharges = user.combat_matches_ads || 0;
+  const freeMatchesLeft = 10 - (user.combat_matches_free || 0);
+  const extraCharges = user.combat_extra_charges || 0;
   const adsWatchedToday = user.combat_daily_ads_watched || 0;
-  const nextUpgradeCost = Math.floor(10000 * Math.pow(1.5, user.hero_level || 0));
+  const nextUpgradeCost = Math.floor(10000 * Math.pow(1.5, user.hero_level || 1));
 
   const handleWatchAd = async () => {
     if (adsWatchedToday >= 5) return alert('Daily ad limit reached!');
@@ -715,6 +713,7 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
 
       {/* Opponent Radar */}
       <ArenaMatchmaking 
+        key={`matchmaking-${user.upgrades?.arena?.wins || 0}-${user.upgrades?.arena?.losses || 0}`}
         user={user} 
         onStartBattle={(op) => {
           setSelectedOpponent(op);
