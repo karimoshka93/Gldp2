@@ -40,16 +40,6 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // --- Diagnostic Global Error Handler for API ---
-  app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error(`[API-ERROR] Global caught: ${err.message}`);
-    res.status(500).json({ 
-      error: 'SERVER_PROCESS_ERROR', 
-      message: 'A critical server error occurred during synchronization.',
-      details: err.message 
-    });
-  });
-
   // Health check for Render
   app.get('/healthz', (req, res) => res.send('OK'));
   app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
@@ -172,9 +162,7 @@ async function startServer() {
         let currentEnergy = Math.min(1000, (user.energy || 0) + diffSecs);
 
         // 2. Daily Reset Detection
-        const combatStats = user.upgrades?.combat_stats || {};
-        const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
-                             (user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0));
+        const lastResetDate = user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0);
         const lastResetUTC = lastResetDate.toISOString().split('T')[0];
         const isNewDay = todayUTC !== lastResetUTC;
 
@@ -188,11 +176,6 @@ async function startServer() {
           console.log(`[SYNC-RESET] Performing daily reset for ${idStr}`);
           updates.daily_quest_states = {};
           updates.daily_taps = 0;
-          updates.upgrades = {
-            ...(user.upgrades || {}),
-            combat_stats: { free: 10, extra: 0, ads: 0, last_reset: now.toISOString() }
-          };
-          // Try to update legacy columns if they exist
           updates.combat_matches_free = 10;
           updates.combat_extra_charges = 0;
           updates.combat_daily_ads_watched = 0;
@@ -202,20 +185,11 @@ async function startServer() {
         const { data: updated, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
         
         if (updateErr) {
-          console.warn(`[SYNC-WARN] Column-safe fallback update triggered for ${idStr}`);
-          // Fallback logic if columns don't exist
-          const fallbackUpdates: any = { 
-            energy: currentEnergy, 
-            updated_at: now.toISOString(),
-            upgrades: updates.upgrades || user.upgrades
-          };
-          if (isNewDay) fallbackUpdates.daily_quest_states = {};
-          
-          const { data: safe } = await supabase.from('users').update(fallbackUpdates).eq('id', idStr).select().single();
-          if (safe) user = safe;
-        } else if (updated) {
-          user = updated;
+          console.error(`[SYNC-UPDATE-ERR] Direct column update failed for ${idStr}: ${updateErr.message}`);
+          throw updateErr;
         }
+        
+        if (updated) user = updated;
       } catch (procErr: any) {
         console.error(`[SYNC-PROC-ERR] Continuing with stale data: ${procErr.message}`);
       }
@@ -730,18 +704,15 @@ async function startServer() {
       const { data: op } = await supabase.from('users').select('*').eq('id', opponentId.toString()).single();
       if (!me || !op) return res.status(400).json({ error: 'MISSING_PROFILE' });
 
-      // Match limit checks - Reading from Safety Zone
+      // Match limit checks
       const now = new Date();
       const todayUTC = now.toISOString().split('T')[0];
-      const upgrades = me.upgrades || {};
-      const combatStats = upgrades.combat_stats || {};
       
-      const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
-                           (me.combat_last_reset ? new Date(me.combat_last_reset) : new Date(0));
+      const lastResetDate = me.combat_last_reset ? new Date(me.combat_last_reset) : new Date(0);
       const lastResetUTC = lastResetDate.toISOString().split('T')[0];
       
-      let freeAvailable = combatStats.free ?? (me.combat_matches_free ?? 10);
-      let extraCharges = combatStats.extra ?? (me.combat_extra_charges || 0);
+      let freeAvailable = me.combat_matches_free ?? 10;
+      let extraCharges = me.combat_extra_charges || 0;
 
       if (todayUTC !== lastResetUTC) {
         freeAvailable = 10;
@@ -799,22 +770,14 @@ async function startServer() {
       const rewardGldp = isWin ? 5000 : 0;
       const rewardPoints = isWin ? 10 : 3;
 
-      const newCombatStats = {
-        free: freeAvailable > 0 ? freeAvailable - 1 : 0,
-        extra: freeAvailable > 0 ? extraCharges : Math.max(0, extraCharges - 1),
-        ads: combatStats.ads || 0,
-        last_reset: now.toISOString()
-      };
-
       const { data: updated } = await supabase.from('users').update({
         balance: me.balance + rewardGldp,
         airdropRank: (me.airdropRank || 0) + rewardPoints,
         arena_tier: tier, arena_tier_level: tierLevel, arena_stars: stars,
-        combat_matches_free: newCombatStats.free,
-        combat_extra_charges: newCombatStats.extra,
+        combat_matches_free: freeAvailable > 0 ? freeAvailable - 1 : 0,
+        combat_extra_charges: freeAvailable > 0 ? extraCharges : Math.max(0, extraCharges - 1),
         combat_last_reset: now.toISOString(),
-        updated_at: now.toISOString(),
-        upgrades: { ...upgrades, combat_stats: newCombatStats }
+        updated_at: now.toISOString()
       }).eq('id', me.id).select().single();
 
       res.json({ winner_id: winnerId, rounds, reward_gldp: rewardGldp, reward_points: rewardPoints, star_change: isWin ? 1 : -1, user: updated });
@@ -832,15 +795,12 @@ async function startServer() {
 
           const now = new Date();
           const todayUTC = now.toISOString().split('T')[0];
-          const upgrades = user.upgrades || {};
-          const combatStats = upgrades.combat_stats || {};
           
-          const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
-                               (user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0));
+          const lastResetDate = user.combat_last_reset ? new Date(user.combat_last_reset) : new Date(0);
           const lastResetUTC = lastResetDate.toISOString().split('T')[0];
           
-          let adsWatchedToday = combatStats.ads ?? (user.combat_daily_ads_watched || 0);
-          let extraCharges = combatStats.extra ?? (user.combat_extra_charges || 0);
+          let adsWatchedToday = user.combat_daily_ads_watched || 0;
+          let extraCharges = user.combat_extra_charges || 0;
 
           if (todayUTC !== lastResetUTC) {
             adsWatchedToday = 0;
@@ -851,35 +811,38 @@ async function startServer() {
             return res.status(400).json({ error: 'LIMIT_REACHED' });
           }
 
-          const newCombatStats = {
-            ...combatStats,
-            ads: adsWatchedToday + 1,
-            extra: extraCharges + 1,
-            last_reset: now.toISOString()
-          };
-
           const { data: updated, error: updateErr } = await supabase.from('users').update({
-            upgrades: { ...upgrades, combat_stats: newCombatStats },
             combat_daily_ads_watched: adsWatchedToday + 1,
             combat_extra_charges: extraCharges + 1,
             combat_last_reset: now.toISOString(),
             updated_at: now.toISOString()
           }).eq('id', telegramId.toString()).select().single();
 
-          if (updateErr) {
-            // Fallback for missing columns
-            const { data: safe } = await supabase.from('users').update({
-                upgrades: { ...upgrades, combat_stats: newCombatStats },
-                updated_at: now.toISOString()
-            }).eq('id', telegramId.toString()).select().single();
-            return res.json(safe);
-          }
+          if (updateErr) throw updateErr;
 
           res.json(updated);
       } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
   // --- End Combat System APIs ---
+
+  // Catch-all for undefined /api routes - PREVENT falling through to Vite (returns HTML)
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ 
+      error: 'NOT_FOUND', 
+      message: `API endpoint ${req.method} ${req.url} is not defined on this server.` 
+    });
+  });
+
+  // Global Error Handler for API - Must be last in the API block
+  app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error(`[API-ERROR] Global caught for ${req.url}: ${err.message}`);
+    res.status(500).json({ 
+      error: 'SERVER_PROCESS_ERROR', 
+      message: 'A critical server error occurred.',
+      details: err.message 
+    });
+  });
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
