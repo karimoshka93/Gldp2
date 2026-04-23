@@ -694,11 +694,11 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
           return (
             <motion.div 
               key={m.id} 
-              whileTap={{ scale: done ? 1 : 0.98 }}
-              onClick={() => !done && (!claiming || claiming === m.id) && handleQuestAction(m)}
+              whileTap={{ scale: (done || onCooldown) ? 1 : 0.98 }}
+              onClick={() => !done && !onCooldown && (!claiming || claiming === m.id) && handleQuestAction(m)}
               className={cn(
                 "glass-card p-5 flex items-center justify-between border-white/5 transition-all",
-                done ? "opacity-50 grayscale bg-white/5" : "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
+                (done || onCooldown) ? "opacity-50 grayscale bg-white/5 cursor-not-allowed" : "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
                 claiming === m.id && "animate-pulse border-blue-500/50"
               )}
             >
@@ -732,8 +732,13 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
               {done ? (
                 <div className="p-1 px-3 bg-white/10 rounded-full text-[8px] font-black uppercase text-neutral-400">Done</div>
               ) : onCooldown ? (
-                <div className="text-[10px] font-mono text-neutral-500 font-bold">
-                  {Math.floor(adCooldown/60)}m {adCooldown%60}s
+                <div className="flex flex-col items-end gap-1">
+                  <div className="p-1 px-3 bg-red-500/10 rounded-full text-[8px] font-black uppercase text-red-500 border border-red-500/20">
+                    Locked
+                  </div>
+                  <div className="text-[12px] font-mono text-yellow-500 font-black tracking-tighter">
+                    {Math.floor(adCooldown/60)}m {adCooldown%60}s
+                  </div>
                 </div>
               ) : (
                 <ChevronRight className="w-5 h-5 opacity-20" />
