@@ -113,8 +113,17 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
         updates.daily_taps = 0;
       }
 
-      const { data: updatedUser } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
-      currentUser = updatedUser;
+      const { data: updatedUser, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
+      
+      if (updateErr) {
+        console.warn("[SYNC_UPDATE_WARNING] Initial update failed, likely missing columns:", updateErr.message);
+        // Fallback: Just update the energy/updated_at which are known to exist
+        const safeUpdates = { energy: currentEnergy, updated_at: new Date().toISOString() };
+        const { data: safeUser } = await supabase.from('users').update(safeUpdates).eq('id', idStr).select().single();
+        if (safeUser) currentUser = safeUser;
+      } else if (updatedUser) {
+        currentUser = updatedUser;
+      }
     }
     
     const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
