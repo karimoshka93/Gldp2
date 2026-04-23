@@ -140,37 +140,70 @@ async function startServer() {
   // Sync endpoint - Robust Daily Reset and Energy Refill
   app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     try {
+      console.log(`[SYNC-DEBUG] Incoming request body:`, JSON.stringify(req.body));
       const { telegramId, username, first_name, photo_url, referred_by } = req.body;
       const idStr = telegramId?.toString();
       
-      if (!idStr) return res.status(400).json({ error: 'telegramId required' });
-      if (!verifyUserMatch(req, idStr)) return res.status(403).json({ error: 'FORBIDDEN' });
+      if (!idStr) {
+        console.warn(`[SYNC-DEBUG] Missing telegramId in body`);
+        return res.status(400).json({ error: 'telegramId required' });
+      }
+      if (!verifyUserMatch(req, idStr)) {
+        console.warn(`[SYNC-DEBUG] User match verification failed for ${idStr}`);
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
 
       console.log(`[SYNC-REQUEST] Processing sync for ${idStr}`);
 
       let { data: user, error: fetchError } = await supabase.from(detectedUserTable).select('*').eq('id', idStr).single();
-      if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        console.error(`[SYNC-DEBUG] Supabase fetch error for ${idStr}:`, fetchError);
+        throw fetchError;
+      }
 
       // Handle Registration
       if (!user) {
         console.log(`[SYNC] REGISTERING NEW USER: ${idStr}`);
         const newUser = {
-          id: idStr, username: username || '', first_name: first_name || '', photo_url: photo_url || null,
-          referred_by: referred_by || null, balance: referred_by ? 5000 : 0, multiplier: 0.1,
-          tap_value: 1, daily_taps: 0, airdropRank: 0, energy: 1000, daily_quest_states: {},
-          completed_missions: [], upgrades: {}, last_claim_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(), created_at: new Date().toISOString(),
+          id: idStr, 
+          username: username || '', 
+          first_name: first_name || '', 
+          photo_url: photo_url || null,
+          referred_by: referred_by || null, 
+          balance: referred_by ? 5000 : 0, 
+          multiplier: 0.1,
+          tap_value: 1, 
+          daily_taps: 0, 
+          airdropRank: 0, 
+          energy: 1000, 
+          daily_quest_states: {},
+          completed_missions: [], 
+          upgrades: {}, 
+          last_claim_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(), 
+          created_at: new Date().toISOString(),
+          hero_class: null,
+          arena_tier: 'Epic',
+          arena_tier_level: 1,
+          arena_stars: 0,
+          combat_matches_free: 10,
+          combat_matches_ads: 0,
+          combat_daily_ads_watched: 0,
+          combat_last_reset: new Date().toISOString()
         };
 
         const { data: inserted, error: insertError } = await supabase.from(detectedUserTable).insert([newUser]).select().single();
-        if (insertError) throw insertError;
+        if (insertError) {
+          console.error(`[SYNC-DEBUG] Registration insert error for ${idStr}:`, insertError);
+          throw insertError;
+        }
         user = inserted;
 
         // Referrer reward (Safe)
         if (referred_by) {
            supabase.from(detectedUserTable).select('balance, airdropRank').eq('id', referred_by.toString()).single().then(({ data: ref }) => {
              if (ref) supabase.from(detectedUserTable).update({ balance: (ref.balance || 0) + 25000, airdropRank: (ref.airdropRank || 0) + 50 }).eq('id', referred_by.toString()).then(() => {});
-           }).catch(() => {});
+           }).catch((e) => console.error(`[SYNC-DEBUG] Referral reward fail for ${referred_by}:`, e));
         }
       }
 
@@ -180,10 +213,11 @@ async function startServer() {
       try {
         const now = new Date();
         const todayUTC = now.toISOString().split('T')[0];
-        const lastUpdate = new Date(user.updated_at || user.created_at || Date.now());
+        const lastUpdate = user.updated_at || user.created_at || new Date().toISOString();
+        const lastUpdateUTC = new Date(lastUpdate).toISOString().split('T')[0];
         
         // 1. Energy Refill logic
-        const diffSecs = Math.max(0, Math.floor((now.getTime() - lastUpdate.getTime()) / 1000));
+        const diffSecs = Math.max(0, Math.floor((now.getTime() - new Date(lastUpdate).getTime()) / 1000));
         let currentEnergy = Math.min(1000, (user.energy || 0) + diffSecs);
 
         // 2. Daily Reset Detection
@@ -191,10 +225,12 @@ async function startServer() {
         const lastResetUTC = lastResetDate.toISOString().split('T')[0];
         const isNewDay = todayUTC !== lastResetUTC;
 
+        console.log(`[SYNC-DEBUG] id=${idStr}, today=${todayUTC}, lastReset=${lastResetUTC}, isNewDay=${isNewDay}`);
+
         const updates: any = { 
           energy: currentEnergy, 
           updated_at: now.toISOString(),
-          daily_taps: (now.toDateString() === lastUpdate.toDateString()) ? user.daily_taps : 0
+          daily_taps: (todayUTC === lastUpdateUTC) ? (user.daily_taps || 0) : 0
         };
 
         if (isNewDay) {
@@ -202,11 +238,12 @@ async function startServer() {
           updates.daily_quest_states = {};
           updates.daily_taps = 0;
           updates.combat_matches_free = 10;
-          updates.combat_extra_charges = 0;
+          updates.combat_matches_ads = 0;
           updates.combat_daily_ads_watched = 0;
           updates.combat_last_reset = now.toISOString();
         }
 
+        console.log(`[SYNC-DEBUG] Applying updates for ${idStr}:`, JSON.stringify(updates));
         const { data: updated, error: updateErr } = await supabase.from(detectedUserTable).update(updates).eq('id', idStr).select().single();
         
         if (updateErr) {
@@ -216,7 +253,8 @@ async function startServer() {
         
         if (updated) user = updated;
       } catch (procErr: any) {
-        console.error(`[SYNC-PROC-ERR] Continuing with stale data: ${procErr.message}`);
+        console.error(`[SYNC-PROC-ERR] Error during energy/reset processing for ${idStr}:`, procErr.message);
+        // Continue with stale data if it's not a fatal update error that was already thrown
       }
 
       // Referral Count (Separate to avoid failures)
@@ -224,13 +262,20 @@ async function startServer() {
       try {
         const { count } = await supabase.from(detectedUserTable).select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
         referralCount = count || 0;
-      } catch (e) {}
+      } catch (e) {
+        console.error(`[SYNC-DEBUG] Referral count fetch failed for ${idStr}:`, e);
+      }
 
+      console.log(`[SYNC-DEBUG] Sync successful for ${idStr}`);
       res.json({ ...user, referralCount });
 
     } catch (err: any) {
-      console.error(`[SYNC-FATAL] Unhandled: ${err.message}`);
-      res.status(500).json({ error: 'SYNC_FATAL', message: err.message });
+      console.error(`[SYNC-FATAL] Logic crash for ${req.body?.telegramId}: ${err.message}`);
+      res.status(500).json({ 
+        error: 'SYNC_FATAL', 
+        message: err.message,
+        path: '/api/user/sync' 
+      });
     }
   });
 
@@ -737,7 +782,7 @@ async function startServer() {
       const lastResetUTC = lastResetDate.toISOString().split('T')[0];
       
       let freeAvailable = me.combat_matches_free ?? 10;
-      let extraCharges = me.combat_extra_charges || 0;
+      let extraCharges = me.combat_matches_ads || 0;
 
       if (todayUTC !== lastResetUTC) {
         freeAvailable = 10;
@@ -800,7 +845,7 @@ async function startServer() {
         airdropRank: (me.airdropRank || 0) + rewardPoints,
         arena_tier: tier, arena_tier_level: tierLevel, arena_stars: stars,
         combat_matches_free: freeAvailable > 0 ? freeAvailable - 1 : 0,
-        combat_extra_charges: freeAvailable > 0 ? extraCharges : Math.max(0, extraCharges - 1),
+        combat_matches_ads: freeAvailable > 0 ? extraCharges : Math.max(0, extraCharges - 1),
         combat_last_reset: now.toISOString(),
         updated_at: now.toISOString()
       }).eq('id', me.id).select().single();
@@ -825,7 +870,7 @@ async function startServer() {
           const lastResetUTC = lastResetDate.toISOString().split('T')[0];
           
           let adsWatchedToday = user.combat_daily_ads_watched || 0;
-          let extraCharges = user.combat_extra_charges || 0;
+          let extraCharges = user.combat_matches_ads || 0;
 
           if (todayUTC !== lastResetUTC) {
             adsWatchedToday = 0;
@@ -838,7 +883,7 @@ async function startServer() {
 
           const { data: updated, error: updateErr } = await supabase.from(detectedUserTable).update({
             combat_daily_ads_watched: adsWatchedToday + 1,
-            combat_extra_charges: extraCharges + 1,
+            combat_matches_ads: extraCharges + 1,
             combat_last_reset: now.toISOString(),
             updated_at: now.toISOString()
           }).eq('id', telegramId.toString()).select().single();
