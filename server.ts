@@ -12,33 +12,58 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3000;
 
 // Supabase Setup
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/$/, ''); // Remove trailing slash
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '';
 
-// Diagnostic logging
+// Table name detection helper
+let detectedUserTable = 'users';
+
+// Diagnostic logging and table check
 if (!supabaseUrl || !supabaseKey) {
-    console.error("DIAGNOSTIC: Supabase environment variables are missing in this environment.");
-} else if (supabaseUrl.endsWith('/')) {
-    console.warn("DIAGNOSTIC: SUPABASE_URL ends with a slash. This usually breaks the SDK.");
+    console.error("DIAGNOSTIC: Supabase environment variables are missing (SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY).");
 }
 
 let supabase: any;
-try {
-    supabase = createClient(supabaseUrl, supabaseKey);
-    // Verification Heartbeat
-    supabase.from('users').select('count', { count: 'exact', head: true }).limit(1)
-        .then(() => console.log("[DATABASE] Connection Verified: Service Role Key is operational."))
-        .catch((err: any) => console.error("[DATABASE] Connection Failed. Check your keys and RLS. Error:", err.message));
-} catch (err: any) {
-    console.error("DIAGNOSTIC: Supabase initialization failed:", err.message);
+async function initializeSupabase() {
+    try {
+        supabase = createClient(supabaseUrl, supabaseKey);
+        
+        // Detect which table exists: users or profiles
+        const { error: usersError } = await supabase.from('users').select('id').limit(1);
+        if (usersError && (usersError.code === '42P01' || usersError.message?.includes('does not exist'))) {
+            console.log("[DATABASE] 'users' table not found, checking 'profiles'...");
+            const { error: profilesError } = await supabase.from('profiles').select('id').limit(1);
+            if (!profilesError) {
+                detectedUserTable = 'profiles';
+                console.log("[DATABASE] Using 'profiles' table.");
+            } else {
+                console.error("[DATABASE] Neither 'users' nor 'profiles' table found. Check SCHEMA_SETUP.MD.");
+            }
+        } else {
+            console.log("[DATABASE] Using 'users' table.");
+        }
+        
+        console.log("[DATABASE] Connection Verified and Table Detected.");
+    } catch (err: any) {
+        console.error("DIAGNOSTIC: Supabase initialization failed:", err.message);
+    }
 }
 
 // Global cache for leaderboard to save quotas
 const leaderboardCaches: Record<string, { data: any[], expires: number }> = {};
 
 async function startServer() {
-  const app = express();
-  app.use(express.json());
+  try {
+    await initializeSupabase();
+    const app = express();
+    
+    // Request logger
+    app.use((req, res, next) => {
+      console.log(`[REQUEST] ${req.method} ${req.url}`);
+      next();
+    });
+    
+    app.use(express.json());
 
   // Health check for Render
   app.get('/healthz', (req, res) => res.send('OK'));
@@ -123,7 +148,7 @@ async function startServer() {
 
       console.log(`[SYNC-REQUEST] Processing sync for ${idStr}`);
 
-      let { data: user, error: fetchError } = await supabase.from('users').select('*').eq('id', idStr).single();
+      let { data: user, error: fetchError } = await supabase.from(detectedUserTable).select('*').eq('id', idStr).single();
       if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
 
       // Handle Registration
@@ -137,14 +162,14 @@ async function startServer() {
           updated_at: new Date().toISOString(), created_at: new Date().toISOString(),
         };
 
-        const { data: inserted, error: insertError } = await supabase.from('users').insert([newUser]).select().single();
+        const { data: inserted, error: insertError } = await supabase.from(detectedUserTable).insert([newUser]).select().single();
         if (insertError) throw insertError;
         user = inserted;
 
         // Referrer reward (Safe)
         if (referred_by) {
-           supabase.from('users').select('balance, airdropRank').eq('id', referred_by.toString()).single().then(({ data: ref }) => {
-             if (ref) supabase.from('users').update({ balance: (ref.balance || 0) + 25000, airdropRank: (ref.airdropRank || 0) + 50 }).eq('id', referred_by.toString()).then(() => {});
+           supabase.from(detectedUserTable).select('balance, airdropRank').eq('id', referred_by.toString()).single().then(({ data: ref }) => {
+             if (ref) supabase.from(detectedUserTable).update({ balance: (ref.balance || 0) + 25000, airdropRank: (ref.airdropRank || 0) + 50 }).eq('id', referred_by.toString()).then(() => {});
            }).catch(() => {});
         }
       }
@@ -182,7 +207,7 @@ async function startServer() {
           updates.combat_last_reset = now.toISOString();
         }
 
-        const { data: updated, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
+        const { data: updated, error: updateErr } = await supabase.from(detectedUserTable).update(updates).eq('id', idStr).select().single();
         
         if (updateErr) {
           console.error(`[SYNC-UPDATE-ERR] Direct column update failed for ${idStr}: ${updateErr.message}`);
@@ -197,7 +222,7 @@ async function startServer() {
       // Referral Count (Separate to avoid failures)
       let referralCount = 0;
       try {
-        const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
+        const { count } = await supabase.from(detectedUserTable).select('*', { count: 'exact', head: true }).eq('referred_by', idStr);
         referralCount = count || 0;
       } catch (e) {}
 
@@ -213,7 +238,7 @@ async function startServer() {
   const grantAdReward = async (id: string) => {
     console.log(`[REWARD-SYSTEM] Supabase processing user: ${id}`);
     const { data: user, error: fetchError } = await supabase
-      .from('users')
+      .from(detectedUserTable)
       .select('*')
       .eq('id', id)
       .single();
@@ -233,7 +258,7 @@ async function startServer() {
     }
 
     const { data: updated, error: updateError } = await supabase
-      .from('users')
+      .from(detectedUserTable)
       .update({
         balance: (user.balance || 0) + 2500,
         airdropRank: (user.airdropRank || 0) + 15,
@@ -269,7 +294,7 @@ async function startServer() {
       }
 
       const { data: user, error: fetchError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .select('*')
         .eq('id', idStr)
         .single();
@@ -282,7 +307,7 @@ async function startServer() {
           return res.status(400).json({ error: 'Already completed' });
         }
         const { data: updated, error: updateError } = await supabase
-          .from('users')
+          .from(detectedUserTable)
           .update({
             balance: (user.balance || 0) + reward,
             airdropRank: (user.airdropRank || 0) + points,
@@ -306,7 +331,7 @@ async function startServer() {
         }
 
         const { data: updated, error: updateError } = await supabase
-          .from('users')
+          .from(detectedUserTable)
           .update({
             balance: (user.balance || 0) + reward,
             airdropRank: (user.airdropRank || 0) + points,
@@ -336,7 +361,7 @@ async function startServer() {
       }
 
       const { data: user, error: fetchError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .select('*')
         .eq('id', idStr)
         .single();
@@ -353,7 +378,7 @@ async function startServer() {
       const reward = actualTaps * tapValue;
 
       const { data: updated, error: updateError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .update({ 
           balance: (user.balance || 0) + reward, 
           energy: (user.energy || 0) - actualTaps,
@@ -381,7 +406,7 @@ async function startServer() {
       }
 
       const { data: user, error: fetchError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .select('*')
         .eq('id', telegramId.toString())
         .single();
@@ -396,13 +421,13 @@ async function startServer() {
       if (earnings <= 0) return res.status(400).json({ error: 'Nothing to claim yet' });
 
       const { data: updated, error: updateError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .update({
           balance: (user.balance || 0) + earnings,
           last_claim_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         })
-        .eq('id', telegramId.toString())
+        .eq(telegramId.toString())
         .select()
         .single();
 
@@ -423,7 +448,7 @@ async function startServer() {
       }
 
       const { data: user, error: fetchError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .select('*')
         .eq('id', telegramId.toString())
         .single();
@@ -451,7 +476,7 @@ async function startServer() {
         if (currentTap >= 100) return res.status(400).json({ error: 'Maximum Tap Performance Reached' });
         
         const { data: updated, error: updateError } = await supabase
-          .from('users')
+          .from(detectedUserTable)
           .update({
             balance: (user.balance || 0) - cost,
             upgrades: newUpgrades,
@@ -466,7 +491,7 @@ async function startServer() {
         return res.json(updated);
       } else {
         const { data: updated, error: updateError } = await supabase
-          .from('users')
+          .from(detectedUserTable)
           .update({
             balance: (user.balance || 0) - cost,
             upgrades: newUpgrades,
@@ -499,7 +524,7 @@ async function startServer() {
       if (!leaderboardCaches[cacheKey] || now > leaderboardCaches[cacheKey].expires) {
         console.log(`[LEADERBOARD] Refreshing Cache for ${sortColumn} from Supabase`);
         const { data: top20, error: fetchError } = await supabase
-          .from('users')
+          .from(detectedUserTable)
           .select('*')
           .order(sortColumn, { ascending: false })
           .limit(20);
@@ -517,7 +542,7 @@ async function startServer() {
 
       if (userId) {
         const { data: userData, error: userFetchError } = await supabase
-          .from('users')
+          .from(detectedUserTable)
           .select(sortColumn)
           .eq('id', userId.toString())
           .single();
@@ -526,7 +551,7 @@ async function startServer() {
           const userValue = userData[sortColumn] || 0;
           
           const { count, error: rankError } = await supabase
-            .from('users')
+            .from(detectedUserTable)
             .select('*', { count: 'exact', head: true })
             .gt(sortColumn, userValue);
           
@@ -568,7 +593,7 @@ async function startServer() {
 
       // Check if already selected
       const { data: user, error: fetchError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .select('hero_class, id')
         .eq('id', telegramId.toString())
         .single();
@@ -589,7 +614,7 @@ async function startServer() {
       if (heroClass === 'Mage') stats = { attack: 100, defense: 120, health: 900 };
 
       const { data: updated, error: updateError } = await supabase
-        .from('users')
+        .from(detectedUserTable)
         .update({
           hero_class: heroClass,
           hero_level: 0,
@@ -627,7 +652,7 @@ async function startServer() {
       const { telegramId } = req.body;
       if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-      const { data: user, error: fetchError } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
+      const { data: user, error: fetchError } = await supabase.from(detectedUserTable).select('*').eq('id', telegramId.toString()).single();
       if (!user || !user.hero_class) return res.status(400).json({ error: 'NO_HERO' });
 
       if (user.hero_level >= 100) return res.status(400).json({ error: 'MAX_LEVEL' });
@@ -641,7 +666,7 @@ async function startServer() {
       if (user.hero_class === 'Archer') growth = { atk: 14, def: 6, hp: 80 };
       if (user.hero_class === 'Mage') growth = { atk: 10, def: 12, hp: 90 };
 
-      const { data: updated, error: updateError } = await supabase.from('users').update({
+      const { data: updated, error: updateError } = await supabase.from(detectedUserTable).update({
         balance: user.balance - cost,
         hero_level: user.hero_level + 1,
         hero_attack: user.hero_attack + growth.atk,
@@ -661,12 +686,12 @@ async function startServer() {
   app.get('/api/combat/search', validateTelegramData, async (req, res) => {
     try {
       const { userId } = req.query;
-      const { data: me, error: myError } = await supabase.from('users').select('*').eq('id', userId?.toString()).single();
+      const { data: me, error: myError } = await supabase.from(detectedUserTable).select('*').eq('id', userId?.toString()).single();
       if (!me) return res.status(404).json({ error: 'NOT_FOUND' });
 
       // Matchmaking priority: Same class -> Closest Level -> Closest Ranking
       // We pull a larger pool of potential opponents to sort through
-      const { data: pool, error: searchError } = await supabase.from('users')
+      const { data: pool, error: searchError } = await supabase.from(detectedUserTable)
         .select('id, username, first_name, photo_url, hero_class, hero_level, hero_attack, hero_defense, hero_health, arena_tier, airdropRank')
         .neq('id', me.id)
         .eq('hero_class', me.hero_class)
@@ -700,8 +725,8 @@ async function startServer() {
       const { telegramId, opponentId } = req.body;
       if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-      const { data: me } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
-      const { data: op } = await supabase.from('users').select('*').eq('id', opponentId.toString()).single();
+      const { data: me } = await supabase.from(detectedUserTable).select('*').eq('id', telegramId.toString()).single();
+      const { data: op } = await supabase.from(detectedUserTable).select('*').eq('id', opponentId.toString()).single();
       if (!me || !op) return res.status(400).json({ error: 'MISSING_PROFILE' });
 
       // Match limit checks
@@ -770,7 +795,7 @@ async function startServer() {
       const rewardGldp = isWin ? 5000 : 0;
       const rewardPoints = isWin ? 10 : 3;
 
-      const { data: updated } = await supabase.from('users').update({
+      const { data: updated } = await supabase.from(detectedUserTable).update({
         balance: me.balance + rewardGldp,
         airdropRank: (me.airdropRank || 0) + rewardPoints,
         arena_tier: tier, arena_tier_level: tierLevel, arena_stars: stars,
@@ -790,7 +815,7 @@ async function startServer() {
           const { telegramId } = req.body;
           if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-          const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
+          const { data: user } = await supabase.from(detectedUserTable).select('*').eq('id', telegramId.toString()).single();
           if (!user) return res.status(404).json({ error: 'Not found' });
 
           const now = new Date();
@@ -811,7 +836,7 @@ async function startServer() {
             return res.status(400).json({ error: 'LIMIT_REACHED' });
           }
 
-          const { data: updated, error: updateErr } = await supabase.from('users').update({
+          const { data: updated, error: updateErr } = await supabase.from(detectedUserTable).update({
             combat_daily_ads_watched: adsWatchedToday + 1,
             combat_extra_charges: extraCharges + 1,
             combat_last_reset: now.toISOString(),
@@ -861,6 +886,9 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://localhost:${PORT}`);
   });
+  } catch (err: any) {
+    console.error("CRITICAL: Server failed to start:", err.message);
+  }
 }
 
 startServer();
