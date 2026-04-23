@@ -481,7 +481,6 @@ const DevelopersTab = ({ user, setUser, syncBalance }: { user: UserProfile, setU
 
 const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, referralCount: number, setUser: React.Dispatch<React.SetStateAction<UserProfile | null>> }) => {
   const [claiming, setClaiming] = useState<string | null>(null);
-  const [adCooldown, setAdCooldown] = useState<number>(0);
   const [adCount, setAdCount] = useState(0);
 
   const missions: Mission[] = [
@@ -496,22 +495,10 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
   // Update ad state from user profile
   useEffect(() => {
     if (user.daily_quest_states?.adsgram) {
-      const { count, last_ad_at } = user.daily_quest_states.adsgram;
+      const { count } = user.daily_quest_states.adsgram;
       setAdCount(count || 0);
-      const now = Date.now();
-      const timeLeft = Math.max(0, (last_ad_at + 3600000) - now);
-      setAdCooldown(Math.ceil(timeLeft / 1000));
     }
   }, [user.daily_quest_states]);
-
-  // Cooldown timer
-  useEffect(() => {
-    if (adCooldown <= 0) return;
-    const interval = setInterval(() => {
-      setAdCooldown(prev => Math.max(0, prev - 1));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [adCooldown]);
 
   const handleQuestAction = async (m: Mission) => {
     if (claiming) return;
@@ -577,8 +564,6 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
         setClaiming(null);
       }
     } else if (m.type === 'ads') {
-      if (adCooldown > 0) return alert(`Please wait ${Math.floor(adCooldown/60)}m ${adCooldown%60}s for next ad`);
-
       const Adsgram = (window as any).Adsgram;
       const blockId = (import.meta as any).env.VITE_ADSGRAM_BLOCK_ID || "28171";
       
@@ -689,16 +674,15 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
       <div className="space-y-3">
         {missions.map(m => {
           const done = m.type !== 'ads' && isCompleted(m.id);
-          const onCooldown = m.type === 'ads' && adCooldown > 0;
 
           return (
             <motion.div 
               key={m.id} 
-              whileTap={{ scale: (done || onCooldown) ? 1 : 0.98 }}
-              onClick={() => !done && !onCooldown && (!claiming || claiming === m.id) && handleQuestAction(m)}
+              whileTap={{ scale: done ? 1 : 0.98 }}
+              onClick={() => !done && (!claiming || claiming === m.id) && handleQuestAction(m)}
               className={cn(
                 "glass-card p-5 flex items-center justify-between border-white/5 transition-all",
-                (done || onCooldown) ? "opacity-50 grayscale bg-white/5 cursor-not-allowed" : "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
+                done ? "opacity-50 grayscale bg-white/5 cursor-not-allowed" : "bg-white/5 hover:bg-white/10 active:border-yellow-500/30",
                 claiming === m.id && "animate-pulse border-blue-500/50"
               )}
             >
@@ -731,15 +715,6 @@ const MissionsTab = ({ user, referralCount, setUser }: { user: UserProfile, refe
               
               {done ? (
                 <div className="p-1 px-3 bg-white/10 rounded-full text-[8px] font-black uppercase text-neutral-400">Done</div>
-              ) : onCooldown ? (
-                <div className="flex flex-col items-end gap-1">
-                  <div className="p-1 px-3 bg-red-500/10 rounded-full text-[8px] font-black uppercase text-red-500 border border-red-500/20">
-                    Locked
-                  </div>
-                  <div className="text-[12px] font-mono text-yellow-500 font-black tracking-tighter">
-                    {Math.floor(adCooldown/60)}m {adCooldown%60}s
-                  </div>
-                </div>
               ) : (
                 <ChevronRight className="w-5 h-5 opacity-20" />
               )}
