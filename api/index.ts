@@ -98,7 +98,20 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
       currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
       
       const updates: any = { energy: currentEnergy, updated_at: new Date().toISOString() };
-      if (todayStr !== lastDateStr) updates.daily_taps = 0;
+      
+      const combatResetDate = new Date(currentUser.combat_last_reset || 0);
+      const isNewDay = todayStr !== combatResetDate.toDateString();
+
+      if (isNewDay) {
+        updates.combat_matches_free = 0;
+        updates.combat_extra_charges = 0;
+        updates.combat_daily_ads_watched = 0;
+        updates.combat_last_reset = new Date().toISOString();
+        updates.daily_quest_states = {};
+        updates.daily_taps = 0;
+      } else if (todayStr !== lastDateStr) {
+        updates.daily_taps = 0;
+      }
 
       const { data: updatedUser } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
       currentUser = updatedUser;
