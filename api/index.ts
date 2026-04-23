@@ -90,69 +90,67 @@ app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     }
 
     if (currentUser) {
-      const lastUpdate = new Date(currentUser.updated_at);
-      const todayStr = new Date().toDateString();
-      const lastDateStr = lastUpdate.toDateString();
-      const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
-      let currentEnergy = currentUser.energy || 0;
-      currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
-      
-      const todayUTC = new Date().toISOString().split('T')[0];
-      const lastResetDate = currentUser.combat_last_reset ? new Date(currentUser.combat_last_reset) : 
-                           (currentUser.upgrades?.combat_stats?.last_reset ? new Date(currentUser.upgrades.combat_stats.last_reset) : new Date(0));
-      const lastResetUTC = lastResetDate.toISOString().split('T')[0];
+      try {
+        const lastUpdate = new Date(currentUser.updated_at || currentUser.created_at || Date.now());
+        const now = new Date();
+        const todayUTC = now.toISOString().split('T')[0];
+        const lastDateStr = lastUpdate.toDateString();
+        const todayStr = now.toDateString();
 
-      const updates: any = { energy: currentEnergy, updated_at: new Date().toISOString() };
-      
-      if (todayUTC !== lastResetUTC) {
-        // Daily Reset - Non-negotiable values
-        // We use the upgrades JSON blob as a "SAFE ZONE" to avoid column missing errors
-        const existingUpgrades = currentUser.upgrades || {};
-        updates.upgrades = {
-          ...existingUpgrades,
-          combat_stats: {
-            free: 10,
-            extra: 0,
-            ads: 0,
-            last_reset: new Date().toISOString()
-          }
+        // Calculate energy recovery
+        const diffSecs = Math.floor((now.getTime() - lastUpdate.getTime()) / 1000);
+        let currentEnergy = currentUser.energy || 0;
+        currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
+
+        // Determine if we need a Daily Reset
+        const combatStats = currentUser.upgrades?.combat_stats || {};
+        const lastResetDate = combatStats.last_reset ? new Date(combatStats.last_reset) : 
+                             (currentUser.combat_last_reset ? new Date(currentUser.combat_last_reset) : new Date(0));
+        const lastResetUTC = lastResetDate.toISOString().split('T')[0];
+        const isNewDay = todayUTC !== lastResetUTC;
+
+        // Build a highly defensive update object
+        const updates: any = { 
+          energy: currentEnergy, 
+          updated_at: now.toISOString() 
         };
-        // Also try to update top-level if they exist, but JSON is our primary source of truth now
-        updates.combat_matches_free = 10;
-        updates.combat_extra_charges = 0;
-        updates.combat_daily_ads_watched = 0;
-        updates.combat_last_reset = new Date().toISOString();
-        
-        updates.daily_quest_states = {};
-        updates.daily_taps = 0;
-      } else if (todayStr !== lastDateStr) {
-        updates.daily_taps = 0;
-      }
 
-      const { data: updatedUser, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
-      
-      if (updateErr) {
-        console.warn("[SYNC_UPDATE_WARNING] Schema mismatch detected. Falling back to JSON-only reset strategy.");
-        // If top-level columns are missing, we ONLY update energy and the UPGRADES blob which is safe JSON
-        const safeResets = {
-          energy: currentEnergy,
-          updated_at: new Date().toISOString(),
-          daily_quest_states: todayUTC !== lastResetUTC ? {} : currentUser.daily_quest_states,
-          daily_taps: (todayUTC !== lastResetUTC || todayStr !== lastDateStr) ? 0 : currentUser.daily_taps,
-          upgrades: {
+        if (isNewDay) {
+          // Add resets to JSON blob (Safe Zone)
+          updates.upgrades = {
             ...(currentUser.upgrades || {}),
-            combat_stats: todayUTC !== lastResetUTC ? {
-              free: 10,
-              extra: 0,
-              ads: 0,
-              last_reset: new Date().toISOString()
-            } : (currentUser.upgrades?.combat_stats || { free: 10, extra: 0, ads: 0 })
-          }
-        };
-        const { data: safeUser } = await supabase.from('users').update(safeResets).eq('id', idStr).select().single();
-        if (safeUser) currentUser = safeUser;
-      } else if (updatedUser) {
-        currentUser = updatedUser;
+            combat_stats: { free: 10, extra: 0, ads: 0, last_reset: now.toISOString() }
+          };
+          // Try top-level columns (Risk zone - we handle error later)
+          updates.combat_matches_free = 10;
+          updates.combat_extra_charges = 0;
+          updates.combat_daily_ads_watched = 0;
+          updates.combat_last_reset = now.toISOString();
+          updates.daily_quest_states = {};
+          updates.daily_taps = 0;
+        } else if (todayStr !== lastDateStr) {
+          updates.daily_taps = 0;
+        }
+
+        // EXECUTE UPDATE WITH INDIVIDUAL COLUMN SAFETY
+        const { data: updated, error: updateErr } = await supabase.from('users').update(updates).eq('id', idStr).select().single();
+        
+        if (updateErr) {
+          console.warn("[SYNC_SAFETY_TRIGGERED] Attempting minimal safe update due to schema error:", updateErr.message);
+          // If the big update failed, do the MINIMAL possible update to GLD and Energy
+          const minimalUpdates = { 
+            energy: currentEnergy, 
+            updated_at: now.toISOString(),
+            upgrades: updates.upgrades || currentUser.upgrades 
+          };
+          const { data: safeUser } = await supabase.from('users').update(minimalUpdates).eq('id', idStr).select().single();
+          if (safeUser) currentUser = safeUser;
+        } else if (updated) {
+          currentUser = updated;
+        }
+      } catch (innerErr) {
+        console.error("[SYNC_INNER_CRASH] Critical error during user processing:", innerErr);
+        // We continue with the original currentUser so the app doesn't crash
       }
     }
     
