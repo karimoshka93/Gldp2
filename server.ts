@@ -114,88 +114,85 @@ async function startServer() {
     return match;
   };
 
+  // --- Helper: Universal Daily Reset ---
+  const checkAndResetDailyData = async (user: any) => {
+    const now = new Date();
+    const lastReset = user.combat_last_reset ? new Date(user.combat_last_reset) : null;
+    
+    const isNewDay = !lastReset || 
+      lastReset.getFullYear() !== now.getFullYear() || 
+      lastReset.getMonth() !== now.getMonth() || 
+      lastReset.getDate() !== now.getDate();
+
+    if (isNewDay) {
+      console.log(`[DAILY-RESET] Triggering reset for user: ${user.id}`);
+      const resetData = {
+        daily_taps: 0,
+        combat_matches_free: 0,
+        combat_matches_ads: 0,
+        combat_daily_ads_watched: 0,
+        combat_extra_charges: 0,
+        daily_quest_states: {},
+        combat_last_reset: now.toISOString(),
+        updated_at: now.toISOString()
+      };
+
+      const { data: updated, error } = await supabase
+        .from('users')
+        .update(resetData)
+        .eq('id', user.id)
+        .select()
+        .single();
+      
+      if (error) {
+        console.error(`[DAILY-RESET] Failed for user ${user.id}:`, error.message);
+        return user;
+      }
+      return updated;
+    }
+    return user;
+  };
+
   // Sync endpoint - Handles initial connection and energy refill
   app.post('/api/user/sync', validateTelegramData, async (req, res) => {
     try {
       const { telegramId, username, first_name, photo_url, referred_by } = req.body;
       const idStr = telegramId?.toString();
       
-      console.log(`[SYNC] Supabase Request for: ${username || 'Unknown'} (${idStr})`);
-
       if (!idStr) return res.status(400).json({ error: 'telegramId required' });
+      if (!verifyUserMatch(req, idStr)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-      if (!verifyUserMatch(req, idStr)) {
-        return res.status(403).json({ error: 'FORBIDDEN' });
-      }
-
-      const { data: user, error: fetchError } = await supabase
+      let { data: user, error: fetchError } = await supabase
         .from('users')
         .select('*')
         .eq('id', idStr)
         .single();
 
-      if (fetchError && fetchError.code !== 'PGRST116') {
-        throw fetchError;
-      }
+      if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
 
       if (user) {
-        const now = new Date();
-        const last = user.combat_last_reset
-          ? new Date(user.combat_last_reset)
-          : null;
-
-        if (
-          !last ||
-          last.getFullYear() !== now.getFullYear() ||
-          last.getMonth() !== now.getMonth() ||
-          last.getDate() !== now.getDate()
-        ) {
-          user.daily_taps = 0;
-          user.combat_matches_free = 5;
-          user.combat_matches_ads = 3;
-          user.combat_daily_ads_watched = 0;
-          user.daily_quest_states = {};
-          user.combat_last_reset = now.toISOString();
-          
-          await supabase.from('users').update({
-            daily_taps: user.daily_taps,
-            combat_matches_free: user.combat_matches_free,
-            combat_matches_ads: user.combat_matches_ads,
-            combat_daily_ads_watched: user.combat_daily_ads_watched,
-            daily_quest_states: user.daily_quest_states,
-            combat_last_reset: user.combat_last_reset,
-            updated_at: now.toISOString()
-          }).eq('id', idStr);
-        }
-      }
-
-      let currentUser = user;
-
-      if (!currentUser) {
+        // Universal Reset Check
+        user = await checkAndResetDailyData(user);
+      } else {
         console.log(`[SYNC] REGISTERING NEW SUPABASE USER: ${idStr}`);
         
         // Reward referrer if exists
         if (referred_by) {
           try {
-            const { data: referrer, error: refFetchError } = await supabase
+            const { data: referrer } = await supabase
               .from('users')
               .select('balance, airdropRank')
               .eq('id', referred_by.toString())
               .single();
 
             if (referrer) {
-              await supabase
-                .from('users')
-                .update({
-                  balance: (referrer.balance || 0) + 25000,
-                  airdropRank: (referrer.airdropRank || 0) + 50,
-                  updated_at: new Date().toISOString()
-                })
-                .eq('id', referred_by.toString());
+              await supabase.from('users').update({
+                balance: (referrer.balance || 0) + 25000,
+                airdropRank: (referrer.airdropRank || 0) + 50,
+                updated_at: new Date().toISOString()
+              }).eq('id', referred_by.toString());
             }
-          } catch (refErr) {
-            console.error("Referral reward error:", refErr);
-          }
+          } catch (refErr) {}
         }
 
         const newUser = {
@@ -209,13 +206,18 @@ async function startServer() {
           tap_value: 1, 
           daily_taps: 0, 
           airdropRank: 0,
-          energy: 1000, // Energy is now 1000
+          energy: 1000,
           daily_quest_states: {},
           completed_missions: [],
           upgrades: {},
           last_claim_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           created_at: new Date().toISOString(),
+          combat_matches_free: 0,
+          combat_matches_ads: 0,
+          combat_daily_ads_watched: 0,
+          combat_extra_charges: 0,
+          combat_last_reset: new Date().toISOString()
         };
 
         const { data: insertedUser, error: insertError } = await supabase
@@ -225,47 +227,42 @@ async function startServer() {
           .single();
 
         if (insertError) throw insertError;
-        currentUser = insertedUser;
+        user = insertedUser;
       }
 
-      // Restore Energy Refill Logic and Reset Daily Taps if new day
-      if (currentUser) {
-        const lastUpdate = new Date(currentUser.updated_at);
-        const todayStr = new Date().toDateString();
-        const lastDateStr = lastUpdate.toDateString();
-        
+      // Restore Energy Refill Logic
+      if (user) {
+        const lastUpdate = new Date(user.updated_at);
         const diffSecs = Math.floor((Date.now() - lastUpdate.getTime()) / 1000);
-        let currentEnergy = currentUser.energy || 0;
-        let currentDailyTaps = currentUser.daily_taps || 0;
-
+        let currentEnergy = user.energy || 0;
+        
         // refill energy +1 per sec up to 1000
         currentEnergy = Math.min(1000, currentEnergy + Math.max(0, diffSecs));
 
-        if (currentEnergy !== currentUser.energy || currentDailyTaps !== currentUser.daily_taps) {
-          const { data: updatedUser, error: updateError } = await supabase
+        if (currentEnergy !== user.energy) {
+          const { data: updatedUser } = await supabase
             .from('users')
             .update({
               energy: currentEnergy,
-              daily_taps: currentDailyTaps,
               updated_at: new Date().toISOString()
             })
             .eq('id', idStr)
             .select()
             .single();
           
-          if (!updateError) currentUser = updatedUser;
+          if (updatedUser) user = updatedUser;
         }
       }
 
       // Get referral count
-      const { count, error: countError } = await supabase
+      const { count } = await supabase
         .from('users')
         .select('*', { count: 'exact', head: true })
         .eq('referred_by', idStr);
 
-      res.json({ ...currentUser, referralCount: count || 0 });
+      res.json({ ...user, referralCount: count || 0 });
     } catch (err: any) {
-      console.error('[SYNC] Supabase Fatal Error:', err.message);
+      console.error('[SYNC] Fatal Error:', err.message);
       res.status(500).json({ error: 'Sync failed.' });
     }
   });
@@ -275,7 +272,7 @@ async function startServer() {
     try {
       console.log(`[REWARD-SYSTEM] Processing Reward for User: ${id}, Quest: ${questId}`);
       
-      const { data: user, error: fetchError } = await supabase
+      let { data: user, error: fetchError } = await supabase
         .from('users')
         .select('*')
         .eq('id', id.toString())
@@ -286,14 +283,21 @@ async function startServer() {
         return null;
       }
 
+      // Ensure reset happens before rewarding
+      user = await checkAndResetDailyData(user);
+
       const questStates = user.daily_quest_states || {};
-      const adState = questStates[questId] || { count: 0, last_ad_at: 0 };
+      let adState = questStates[questId];
       
+      // Migration/Hardening: If adState is a string (legacy) or missing, convert to object
+      if (typeof adState === 'string' || !adState) {
+        adState = { count: 0, last_ad_at: 0 };
+      }
+
       const today = new Date().toDateString();
       const lastDate = new Date(adState.last_ad_at || 0).toDateString();
-      const countToday = today === lastDate ? adState.count : 0;
+      const countToday = today === lastDate ? (Number(adState.count) || 0) : 0;
 
-      // Define rewards - Type safe conversion
       let rewardGldp = 2500;
       let rewardPoints = 15;
 
@@ -304,32 +308,43 @@ async function startServer() {
 
       const currentBalance = Number(user.balance || 0);
       const currentRank = Number(user.airdropRank || 0);
+      const newCount = countToday + 1;
 
-      console.log(`[REWARD-SYSTEM] Updating balance for ${id}: ${currentBalance} -> ${currentBalance + rewardGldp}`);
+      console.log(`[REWARD-SYSTEM] Updating: Balance +${rewardGldp}, Rank +${rewardPoints}, Count: ${newCount}`);
 
       const { data: updated, error: updateError } = await supabase
         .from('users')
         .update({
           balance: currentBalance + rewardGldp,
           airdropRank: currentRank + rewardPoints,
-          daily_quest_states: { ...questStates, [questId]: { count: countToday + 1, last_ad_at: Date.now() } }
+          daily_quest_states: { 
+            ...questStates, 
+            [questId]: { 
+              count: newCount, 
+              last_ad_at: Date.now(),
+              // Keep an ISO string for UI compatibility if needed
+              completed_at: new Date().toISOString() 
+            } 
+          },
+          updated_at: new Date().toISOString()
         })
         .eq('id', id.toString())
         .select()
         .single();
       
       if (updateError) {
-        console.error(`[REWARD-SYSTEM] Update failed for ${id}:`, updateError.message);
+        console.error(`[REWARD-SYSTEM] Update failed:`, updateError.message);
         return null;
       }
 
-      console.log(`[REWARD-SYSTEM] Success! New Balance for ${id}: ${updated.balance}`);
+      console.log(`[REWARD-SYSTEM] Success for ${id}. New Balance: ${updated.balance}`);
       return updated;
     } catch (err: any) {
-      console.error(`[REWARD-SYSTEM] Fatal Error for ${id}:`, err.message);
+      console.error(`[REWARD-SYSTEM] Fatal Exception:`, err.message);
       return null;
     }
   };
+
 
   app.get('/api/adsgram/reward', async (req, res) => {
     const userid = req.query.userid || req.query.userId || req.query.user_id;
@@ -378,24 +393,8 @@ async function startServer() {
         
       if (!user) throw new Error('User not found');
 
-      const now = new Date();
-      const last = user.combat_last_reset
-        ? new Date(user.combat_last_reset)
-        : null;
-
-      if (
-        !last ||
-        last.getFullYear() !== now.getFullYear() ||
-        last.getMonth() !== now.getMonth() ||
-        last.getDate() !== now.getDate()
-      ) {
-        user.daily_taps = 0;
-        user.combat_matches_free = 5;
-        user.combat_matches_ads = 3;
-        user.combat_daily_ads_watched = 0;
-        user.daily_quest_states = {};
-        user.combat_last_reset = now.toISOString();
-      }
+      // Universal Reset Check
+      user = await checkAndResetDailyData(user);
 
       if (type === 'social') {
         const completed = user.completed_missions || [];
@@ -826,36 +825,22 @@ async function startServer() {
 
       if (!me || !op) return res.status(400).json({ error: 'MISSING_PROFILE' });
 
-      const now = new Date();
-      const last = me.combat_last_reset
-        ? new Date(me.combat_last_reset)
-        : null;
+      // Universal Reset Check
+      const activeUser = await checkAndResetDailyData(me);
 
-      if (
-        !last ||
-        last.getFullYear() !== now.getFullYear() ||
-        last.getMonth() !== now.getMonth() ||
-        last.getDate() !== now.getDate()
-      ) {
-        me.daily_taps = 0;
-        me.combat_matches_free = 5;
-        me.combat_matches_ads = 3;
-        me.combat_daily_ads_watched = 0;
-        me.daily_quest_states = {};
-        me.combat_last_reset = now.toISOString();
-      }
+      // Match limit checks (New Logic)
+      // 1. Free Matches (0 to 10)
+      // 2. Extra Charges (earned via ads)
+      let freeCount = activeUser.combat_matches_free || 0;
+      let extraCount = activeUser.combat_extra_charges || 0;
+      let usingExtra = false;
 
-      // Match limit checks
-      const resetDate = new Date(me.combat_last_reset || 0);
-      let freeUsed = me.combat_matches_free || 0;
-      let adsUsed = me.combat_matches_ads || 0;
-
-      if (now.toDateString() !== resetDate.toDateString()) {
-        freeUsed = 0;
-        adsUsed = 0;
-      }
-
-      if (freeUsed >= 10 && adsUsed >= 5) {
+      if (freeCount < 10) {
+        freeCount++;
+      } else if (extraCount > 0) {
+        extraCount--;
+        usingExtra = true;
+      } else {
         return res.status(400).json({ error: 'LIMIT_REACHED' });
       }
 
@@ -940,16 +925,15 @@ async function startServer() {
       const rewardPoints = isWin ? 10 : 3;
 
       const { data: updated, error: finalUpdateErr } = await supabase.from('users').update({
-        balance: me.balance + rewardGldp,
-        airdropRank: (me.airdropRank || 0) + rewardPoints,
+        balance: activeUser.balance + rewardGldp,
+        airdropRank: (activeUser.airdropRank || 0) + rewardPoints,
         arena_tier: tier,
         arena_tier_level: tierLevel,
         arena_stars: stars,
-        combat_matches_free: freeUsed < 10 ? freeUsed + 1 : freeUsed,
-        combat_matches_ads: freeUsed >= 10 ? adsUsed + 1 : adsUsed,
-        combat_last_reset: now.toISOString(),
+        combat_matches_free: freeCount,
+        combat_extra_charges: extraCount,
         updated_at: new Date().toISOString()
-      }).eq('id', me.id).select().single();
+      }).eq('id', activeUser.id).select().single();
 
       res.json({
         winner_id: winnerId,
@@ -971,8 +955,15 @@ async function startServer() {
       const { telegramId } = req.body;
       if (!verifyUserMatch(req, telegramId)) return res.status(403).json({ error: 'FORBIDDEN' });
 
-      const { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
+      let { data: user } = await supabase.from('users').select('*').eq('id', telegramId.toString()).single();
       if (!user) return res.status(404).send('Not found');
+
+      // Universal Reset Check
+      user = await checkAndResetDailyData(user);
+
+      if ((user.combat_daily_ads_watched || 0) >= 5) {
+        return res.status(400).json({ error: 'Daily ad limit reached' });
+      }
 
       const adsWatchedToday = (user.combat_daily_ads_watched || 0) + 1;
       const extraCharges = (user.combat_extra_charges || 0) + 1;
