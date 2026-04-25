@@ -83,21 +83,20 @@ export const ArenaMatchmaking = ({ user, onStartBattle }: { user: UserProfile, o
               </div>
               <button 
                 onClick={() => {
-                  const free = 10 - (user.combat_matches_free || 0);
                   const extra = user.combat_extra_charges || 0;
-                  if (free <= 0 && extra <= 0) {
-                    return alert("Warning: Energy depleted! Watch an ad or wait for daily reset.");
+                  if (extra <= 0) {
+                    return alert("Warning: No Combat Charges! Watch an ad to recharge.");
                   }
                   onStartBattle(op);
                 }}
                 className={cn(
                   "px-4 py-2 text-white text-[10px] font-black uppercase rounded-lg shadow-lg active:scale-95 transition-all border",
-                  (10 - (user.combat_matches_free || 0) <= 0 && (user.combat_extra_charges || 0) <= 0)
+                  ((user.combat_extra_charges || 0) <= 0)
                     ? "bg-neutral-600 border-neutral-500 opacity-50 cursor-not-allowed shadow-none"
                     : "bg-red-600/90 hover:bg-red-500 border-red-400/20 shadow-red-600/20"
                 )}
               >
-                {(10 - (user.combat_matches_free || 0) <= 0 && (user.combat_extra_charges || 0) <= 0) ? 'NO CHARGES' : 'ATTACK'}
+                {((user.combat_extra_charges || 0) <= 0) ? 'NO CHARGES' : 'ATTACK'}
               </button>
             </motion.div>
           ))}
@@ -523,14 +522,11 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
     tierLevel: user.arena_tier_level || 1
   };
   
-  const freeMatchesLeft = 10 - (user.combat_matches_free || 0);
   const extraCharges = user.combat_extra_charges || 0;
   const adsWatchedToday = user.combat_daily_ads_watched || 0;
   const nextUpgradeCost = Math.floor(10000 * Math.pow(1.5, user.hero_level || 1));
 
   const handleWatchAd = async () => {
-    if (adsWatchedToday >= 5) return alert('Daily ad limit reached!');
-    
     const Adsgram = (window as any).Adsgram;
     const blockId = "28171"; // Use default or from env if available
     
@@ -669,41 +665,29 @@ export const HeroTab = ({ user, setUser }: { user: UserProfile, setUser: any }) 
       </div>
 
       {/* Energy Management Dashboard */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="glass-card p-5 bg-[#1e293b]/30 border-white/5 relative group overflow-hidden">
-           <div className="flex items-center gap-2 mb-4">
-              <RefreshCcw className="w-4 h-4 text-blue-500 group-hover:rotate-180 transition-all duration-700" />
-              <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none">Free Passes</p>
-           </div>
-           <div className="flex items-end justify-between">
-              <p className="text-3xl font-black text-white tracking-tighter leading-none">{freeMatchesLeft}</p>
-              <span className="text-[8px] font-black px-2.5 py-1.5 bg-blue-500/10 text-blue-400 rounded-lg border border-blue-500/20 uppercase tracking-widest leading-none shadow-lg">RES 10</span>
-           </div>
-           <div className="absolute -right-4 -bottom-4 w-12 h-12 bg-blue-500/5 blur-2xl rounded-full" />
-        </div>
-        
+      <div className="w-full">
         <div 
           onClick={handleWatchAd}
           className={cn(
             "glass-card p-5 border-white/5 relative group overflow-hidden transition-all cursor-pointer",
-            adsWatchedToday >= 5 ? "bg-[#1e293b]/30 opacity-60" : "bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-95"
+            "bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-95 shadow-xl"
           )}
         >
            <div className="flex items-center gap-2 mb-4">
               <Zap className="w-4 h-4 text-emerald-500 group-active:scale-125 transition-all" />
-              <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none">Extra Charges</p>
+              <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest leading-none">Combat Charges (Watch Ad to +1)</p>
            </div>
            <div className="flex items-end justify-between">
               <div className="flex flex-col">
                 <p className="text-3xl font-black text-white tracking-tighter leading-none">{extraCharges}</p>
-                <p className="text-[8px] font-bold text-neutral-500 mt-1 uppercase">Watched: {adsWatchedToday}/5</p>
+                <p className="text-[8px] font-bold text-neutral-500 mt-1 uppercase">Today: {adsWatchedToday} Ads</p>
               </div>
               <div className="flex flex-col items-end">
                 <span className={cn(
-                  "text-[8px] font-black px-2.5 py-1.5 rounded-lg border uppercase tracking-widest leading-none shadow-lg",
-                  adsWatchedToday >= 5 ? "bg-neutral-500/10 text-neutral-500 border-white/5" : "bg-emerald-500/20 text-emerald-500 border-emerald-500/20"
+                  "text-[8px] font-black px-4 py-2 rounded-lg border uppercase tracking-widest leading-none shadow-lg",
+                  "bg-emerald-500/20 text-emerald-500 border-emerald-500/20 group-hover:bg-emerald-500 group-hover:text-black transition-colors"
                 )}>
-                  {adsWatchedToday >= 5 ? "MAXED" : "WATCH AD"}
+                  GET CHARGE
                 </span>
               </div>
            </div>
