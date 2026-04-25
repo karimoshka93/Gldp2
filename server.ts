@@ -128,8 +128,8 @@ async function startServer() {
       console.log(`[DAILY-RESET] Triggering reset for user: ${user.id}`);
       const resetData = {
         daily_taps: 0,
-        combat_matches_free: 0,
-        combat_matches_ads: 0,
+        combat_matches_free: 5,
+        combat_matches_ads: 10,
         combat_daily_ads_watched: 0,
         combat_extra_charges: 0,
         daily_quest_states: {},
@@ -828,18 +828,14 @@ async function startServer() {
       // Universal Reset Check
       const activeUser = await checkAndResetDailyData(me);
 
-      // Match limit checks (New Logic)
-      // 1. Free Matches (0 to 10)
-      // 2. Extra Charges (earned via ads)
-      let freeCount = activeUser.combat_matches_free || 0;
+      // Match limit checks (Updated to allowance-based logic)
+      let freeRemaining = activeUser.combat_matches_free || 0;
       let extraCount = activeUser.combat_extra_charges || 0;
-      let usingExtra = false;
-
-      if (freeCount < 10) {
-        freeCount++;
+      
+      if (freeRemaining > 0) {
+        freeRemaining--;
       } else if (extraCount > 0) {
         extraCount--;
-        usingExtra = true;
       } else {
         return res.status(400).json({ error: 'LIMIT_REACHED' });
       }
@@ -930,7 +926,7 @@ async function startServer() {
         arena_tier: tier,
         arena_tier_level: tierLevel,
         arena_stars: stars,
-        combat_matches_free: freeCount,
+        combat_matches_free: freeRemaining,
         combat_extra_charges: extraCount,
         updated_at: new Date().toISOString()
       }).eq('id', activeUser.id).select().single();
@@ -961,17 +957,19 @@ async function startServer() {
       // Universal Reset Check
       user = await checkAndResetDailyData(user);
 
-      if ((user.combat_daily_ads_watched || 0) >= 5) {
+      if ((user.combat_daily_ads_watched || 0) >= 10) {
         return res.status(400).json({ error: 'Daily ad limit reached' });
       }
 
       const adsWatchedToday = (user.combat_daily_ads_watched || 0) + 1;
+      const matchesAdsRemaining = Math.max(0, (user.combat_matches_ads || 10) - 1);
       const extraCharges = (user.combat_extra_charges || 0) + 1;
 
       const { data: updated, error } = await supabase
         .from('users')
         .update({
           combat_daily_ads_watched: adsWatchedToday,
+          combat_matches_ads: matchesAdsRemaining,
           combat_extra_charges: extraCharges,
           updated_at: new Date().toISOString()
         })
