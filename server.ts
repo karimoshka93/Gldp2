@@ -385,7 +385,7 @@ async function startServer() {
         return res.status(403).json({ error: 'FORBIDDEN' });
       }
 
-      const { data: user, error: fetchError } = await supabase
+      let { data: user, error: fetchError } = await supabase
         .from('users')
         .select('*')
         .eq('id', idStr)

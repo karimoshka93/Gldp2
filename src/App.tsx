@@ -214,6 +214,35 @@ const HomeTab = ({ user, setUser, syncBalance, onTapBatch }: { user: UserProfile
 
   return (
     <div className="flex flex-col items-center gap-10 pt-4 pb-24 px-6 relative overflow-hidden">
+      {/* GLD Project Announcement */}
+      <motion.a 
+        href="https://www.digitalgold.com.ru" 
+        target="_blank" 
+        rel="noopener noreferrer"
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-sm glass-card overflow-hidden group active:scale-[0.98] transition-all border-yellow-500/30 relative"
+      >
+        <div className="relative h-32 w-full overflow-hidden">
+          <img 
+            src="https://ik.imagekit.io/Dgitalgold25/3dbecfb0-442f-449b-a477-31b5576ded34.png" 
+            alt="GLD Project" 
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent flex flex-col justify-end p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+              <p className="text-[9px] font-black uppercase text-yellow-500 tracking-widest leading-none">Global Project</p>
+            </div>
+            <p className="text-sm font-black text-white leading-tight">Join the GLD project and start real mining.</p>
+            <div className="flex items-center gap-1 mt-2 text-[8px] font-black text-neutral-400 uppercase tracking-widest">
+              <span>Visit digitalgold.com.ru</span>
+              <ExternalLink className="w-2 h-2" />
+            </div>
+          </div>
+        </div>
+      </motion.a>
+
       {/* Floating Particles/Texts */}
       <AnimatePresence>
         {floatingTexts.map(t => (
