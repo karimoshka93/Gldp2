@@ -21,6 +21,7 @@ import {
   Database,
   Terminal,
   Shield,
+  ShieldAlert,
   Workflow,
   Layers,
   Server,
@@ -44,6 +45,31 @@ import {
 import { HeroTab } from './components/CombatSystem';
 
 // --- Components ---
+
+const NewsTicker = () => {
+  const tickerText = "Anyone who uses cheating will be banned. To maintain fair play, all accounts that used cheats or bots will be reset to zero. The number of ad views will be compared to the number of activity points or matches played in Combat.";
+  
+  return (
+    <div className="fixed top-0 left-0 right-0 h-6 bg-red-600 flex items-center overflow-hidden z-[60] border-b border-red-500/30">
+      <div className="flex px-4 bg-red-700 h-full items-center z-10 shadow-[4px_0_10px_rgba(0,0,0,0.3)]">
+        <ShieldAlert className="w-3 h-3 text-white animate-pulse" />
+      </div>
+      <motion.div
+        animate={{ x: ["5%", "-100%"] }}
+        transition={{ 
+          duration: 40, 
+          repeat: Infinity, 
+          ease: "linear" 
+        }}
+        className="whitespace-nowrap text-white font-black text-[9px] uppercase tracking-widest flex items-center gap-12"
+      >
+        <span>{tickerText}</span>
+        <span>{tickerText}</span>
+        <span>{tickerText}</span>
+      </motion.div>
+    </div>
+  );
+};
 
 const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
   const tabs = [
@@ -86,7 +112,7 @@ const Header = ({ user, setActiveTab }: { user: UserProfile | null, setActiveTab
       e.preventDefault();
       setActiveTab('profile');
     }}
-    className="fixed top-0 left-0 right-0 px-6 pt-10 pb-4 bg-[#0f172a]/80 backdrop-blur-md z-40 flex items-center justify-between border-b border-[#334155] cursor-pointer active:bg-white/5 transition-colors"
+    className="fixed top-6 left-0 right-0 px-6 pt-6 pb-4 bg-[#0f172a]/80 backdrop-blur-md z-40 flex items-center justify-between border-b border-[#334155] cursor-pointer active:bg-white/5 transition-colors"
   >
     <div className="flex items-center gap-3">
       <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-yellow-500 to-amber-600 flex items-center justify-center font-bold text-white shadow-[0_0_15px_rgba(234,179,8,0.3)] border-2 border-yellow-400 overflow-hidden">
@@ -1330,6 +1356,7 @@ export default function App() {
   return (
     <TonConnectUIProvider manifestUrl={`${window.location.origin}/tonconnect-manifest.json`}>
       <div className="min-h-screen bg-[#0f172a] pb-32">
+        <NewsTicker />
         <Header user={user} setActiveTab={setActiveTab} />
         
         {errorDetails && (
@@ -1347,7 +1374,7 @@ export default function App() {
           </div>
         )}
 
-        <main className={`min-h-screen max-w-lg mx-auto ${errorDetails ? 'pt-4' : 'pt-24'}`}>
+        <main className={`min-h-screen max-w-lg mx-auto ${errorDetails ? 'pt-4' : 'pt-20'}`}>
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
