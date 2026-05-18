@@ -71,6 +71,69 @@ const NewsTicker = () => {
   );
 };
 
+const CALCULATING_MODE = true;
+
+const CalculatingPrizes = () => (
+  <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center p-8 text-center relative overflow-hidden">
+    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-yellow-500/5 via-transparent to-transparent" />
+    
+    <motion.div
+      initial={{ scale: 0, rotate: -180 }}
+      animate={{ scale: 1, rotate: 0 }}
+      transition={{ type: "spring", damping: 15, stiffness: 100 }}
+      className="w-32 h-32 bg-gradient-to-tr from-yellow-500 to-amber-600 rounded-3xl flex items-center justify-center mb-10 shadow-[0_0_50px_rgba(234,179,8,0.3)] border-2 border-yellow-400 relative z-10"
+    >
+      <Trophy className="w-16 h-16 text-white drop-shadow-lg" />
+      <motion.div
+        animate={{ opacity: [0, 1, 0], scale: [0.8, 1.2, 0.8] }}
+        transition={{ duration: 2, repeat: Infinity }}
+        className="absolute -inset-4 border-2 border-yellow-500/30 rounded-full"
+      />
+    </motion.div>
+
+    <motion.h1 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.3 }}
+      className="text-5xl font-black text-white mb-6 gold-gradient tracking-tighter"
+    >
+      Calculating prizes.
+    </motion.h1>
+    
+    <motion.p 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.4 }}
+      className="text-[#94a3b8] text-sm max-w-xs leading-relaxed uppercase tracking-[0.2em] font-black"
+    >
+      The season has ended. Airdrop distributions are being verified and processed.
+    </motion.p>
+
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ delay: 0.6 }}
+      className="mt-16 flex gap-3"
+    >
+      {[0, 1, 2].map((i) => (
+        <motion.div
+          key={i}
+          animate={{ 
+            y: [0, -10, 0],
+            backgroundColor: ["#eab308", "#fbbf24", "#eab308"]
+          }}
+          transition={{ 
+            duration: 0.8, 
+            repeat: Infinity, 
+            delay: i * 0.15 
+          }}
+          className="w-3 h-3 rounded-full shadow-[0_0_10px_rgba(234,179,8,0.4)]"
+        />
+      ))}
+    </motion.div>
+  </div>
+);
+
 const Navbar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
   const tabs = [
     { id: 'home', icon: HomeIcon, label: 'Home' },
@@ -1260,6 +1323,10 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (CALCULATING_MODE) {
+      setLoading(false);
+      return;
+    }
     // Initial Sync
     const sync = async () => {
       const tg = window.Telegram?.WebApp;
@@ -1341,6 +1408,17 @@ export default function App() {
   }, []);
 
   const tapCooldownRef = useRef<NodeJS.Timeout | null>(null);
+
+  if (CALCULATING_MODE) {
+    return (
+      <TonConnectUIProvider manifestUrl={`${window.location.origin}/tonconnect-manifest.json`}>
+        <div className="min-h-screen bg-[#0f172a]">
+          <NewsTicker />
+          <CalculatingPrizes />
+        </div>
+      </TonConnectUIProvider>
+    );
+  }
 
   if (loading) {
     return (
